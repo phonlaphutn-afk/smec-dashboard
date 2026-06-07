@@ -13,43 +13,20 @@ export async function fetchSheet(action) {
 }
 
 export async function postSheet(payload) {
+  // ส่งครั้งเดียวด้วย no-cors เสมอ — Apps Script ไม่รองรับ CORS จาก browser
+  // ใช้ no-cors ตรงๆ ไม่ต้อง fallback (หลีกเลี่ยงส่ง 2 ครั้ง)
   try {
-    // Google Apps Script: ต้องใช้ Content-Type: text/plain เพื่อหลีกเลี่ยง CORS preflight
-    // redirect: follow เพื่อ follow การ redirect ของ Apps Script
-    const res = await fetch(SCRIPT_URL, {
+    await fetch(SCRIPT_URL, {
       method: 'POST',
-      redirect: 'follow',
+      mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(payload),
     })
-    // response อาจเป็น opaque (type === 'opaque') เมื่อ redirect ข้าม origin
-    if (res.type === 'opaque' || res.status === 0) {
-      // ถือว่า success เพราะ Apps Script ไม่ throw error
-      return { status: 'success' }
-    }
-    const text = await res.text()
-    if (!text || text.trim() === '') return { status: 'success' }
-    try {
-      return JSON.parse(text)
-    } catch {
-      // ถ้า parse ไม่ได้แต่ response ok ถือว่า success
-      if (res.ok) return { status: 'success' }
-      return { status: 'error', message: 'ไม่สามารถอ่าน response จาก Apps Script ได้: ' + text.slice(0, 100) }
-    }
+    // no-cors ไม่มี response body — ถือว่า success เสมอ
+    return { status: 'success' }
   } catch (e) {
     console.error('postSheet error:', e)
-    // Network error / CORS — ลอง fallback ด้วย no-cors (ไม่ได้ response แต่ request ถึง server)
-    try {
-      await fetch(SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
-      })
-      return { status: 'success' }  // ไม่มี response แต่ถือว่าส่งถึง
-    } catch (e2) {
-      return { status: 'error', message: 'Network error: ' + e.message }
-    }
+    return { status: 'error', message: 'Network error: ' + e.message }
   }
 }
 
