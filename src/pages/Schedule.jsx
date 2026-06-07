@@ -184,338 +184,442 @@ function ScheduleDashboard({ jobs, plans, holidays }) {
   )
 }
 
-// ── 2. MASTER PLAN (Gantt) ─────────────────────────────────────────
+// ── 2. MASTER PLAN ─────────────────────────────────────────────────
+// แสดง Gantt + tree hierarchy จาก TaskName pattern [1], [1.1], [1.1.1]
 // ─────────────────────────────────────────────────────────────────
-// MASTER PLAN — Gantt สวย grouping by DocNo
-// ─────────────────────────────────────────────────────────────────
-const PROJ_COLORS = [
-  '#60a5fa','#34d399','#f59e0b','#f472b6','#a78bfa',
-  '#38bdf8','#fb923c','#4ade80','#e879f9','#facc15',
-]
+
+// ── helpers ──
+function detectLevel(taskName) {
+  // [1] = level 1, [1.1] = level 2, [1.1.1] = level 3
+  const m = String(taskName||'').match(/^\[(\d+(?:\.\d+)*)\]/)
+  if (!m) return 0
+  return m[1].split('.').length
+}
+
+function detectLevelStr(taskName) {
+  const m = String(taskName||'').match(/^\[(\d+(?:\.\d+)*)\]/)
+  return m ? m[1] : null
+}
+
+// group tasks โดย DocNo แล้วสร้าง tree
+function buildTree(plans) {
+  // group by DocNo
+  const byDoc = {}
+  plans.forEach(p => {
+    const key = p.jobNo || '(ไม่มีเลขงาน)'
+    if (!byDoc[key]) byDoc[key] = []
+    byDoc[key].push(p)
+  })
+
+  return Object.entries(byDoc).map(([docNo, tasks]) => {
+    // คำนวณ progress รวมของ group
+    const withProgress = tasks.filter(t => t.progress !== undefined && t.progress !== '')
+    const avgProgress = withProgress.length
+      ? Math.round(withProgress.reduce((s, t) => s + parseFloat(t.progress || 0), 0) / withProgress.length)
+      : 0
+    const gs = tasks.reduce((mn, t) => t.startDate && t.startDate < mn ? t.startDate : mn, '9999')
+    const ge = tasks.reduce((mx, t) => t.endDate && t.endDate > mx ? t.endDate : mx, '0000')
+    return { docNo, tasks, avgProgress, groupStart: gs === '9999' ? '' : gs, groupEnd: ge === '0000' ? '' : ge }
+  })
+}
+
+const STATUS_COLORS_PLAN = {
+  'เสร็จแล้ว':       { bg: '#4ade8030', border: '#4ade80', text: '#4ade80' },
+  'กำลังดำเนินการ':  { bg: '#60a5fa30', border: '#60a5fa', text: '#60a5fa' },
+  'รอดำเนินการ':     { bg: '#fbbf2430', border: '#fbbf24', text: '#fbbf24' },
+  'ยกเลิก':          { bg: '#94a3b830', border: '#94a3b8', text: '#94a3b8' },
+}
+function scolor(status) {
+  return STATUS_COLORS_PLAN[status] || { bg: '#60a5fa20', border: '#60a5fa80', text: '#60a5fa' }
+}
+
+const DOC_COLORS = ['#60a5fa','#34d399','#f59e0b','#f472b6','#a78bfa','#38bdf8','#fb923c','#4ade80','#e879f9','#facc15']
+
+// ── EditCell ── inline editable cell
+function EditCell({ value, onChange, type = 'text', options, style }) {
+  const [editing, setEditing] = useState(false)
+  const [v, setV] = useState(value)
+  useEffect(() => setV(value), [value])
+  if (editing) {
+    if (options) return (
+      <select autoFocus className="text-xs w-full"
+        style={{ background: '#0d2137', border: '1px solid #3b82f6', borderRadius: 4, color: '#e2e8f0', padding: '1px 4px', ...style }}
+        value={v} onChange={e => { setV(e.target.value); onChange(e.target.value); setEditing(false) }}
+        onBlur={() => setEditing(false)}>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    )
+    return (
+      <input autoFocus type={type} className="text-xs w-full"
+        style={{ background: '#0d2137', border: '1px solid #3b82f6', borderRadius: 4, color: '#e2e8f0', padding: '1px 4px', ...style }}
+        value={v}
+        onChange={e => setV(e.target.value)}
+        onBlur={() => { onChange(v); setEditing(false) }}
+        onKeyDown={e => { if (e.key === 'Enter') { onChange(v); setEditing(false) } if (e.key === 'Escape') setEditing(false) }}
+      />
+    )
+  }
+  return (
+    <span className="cursor-pointer hover:text-blue-400 transition-colors" style={style}
+      onClick={() => setEditing(true)} title="คลิกเพื่อแก้ไข">{value || <span style={{color:'#4a6584'}}>–</span>}</span>
+  )
+}
 
 function MasterPlan({ jobs, plans, setPlans, holidays }) {
-  const [viewMode, setViewMode]     = useState('2w')   // 2w | 1m | 3m
+  const [viewMode, setViewMode]     = useState('2w')
   const [anchor, setAnchor]         = useState(getMondayOf(todayISO()))
-  const [filterType, setFilterType] = useState('all')  // all | project | general
+  const [filterType, setFilterType] = useState('all')
   const [search, setSearch]         = useState('')
   const [showAdd, setShowAdd]       = useState(false)
-  const [collapsed, setCollapsed]   = useState({})     // { docNo: true }
+  const [collapsed, setCollapsed]   = useState({})   // { docNo: bool }
   const scrollRef = useRef(null)
+  const today = todayISO()
 
-  const LABEL_W  = 280  // px ของคอลัมน์ชื่องาน
-  const COL_W    = viewMode === '3m' ? 24 : viewMode === '1m' ? 32 : 42 // px/day
-
+  const COL_W      = viewMode === '3m' ? 20 : viewMode === '1m' ? 28 : 38
   const displayDays = viewMode === '2w' ? 14 : viewMode === '1m' ? 30 : 90
   const dates       = useMemo(() => getWeekDates(anchor, displayDays), [anchor, displayDays])
-  const endAnchor   = dates[dates.length-1]
-  const holidaySet  = useMemo(() => new Set(holidays.map(h=>h.date)), [holidays])
-  const today       = todayISO()
+  const endAnchor   = dates[dates.length - 1]
+  const holidaySet  = useMemo(() => new Set(holidays.map(h => h.date)), [holidays])
+  const totalW      = displayDays * COL_W
+  const LABEL_W     = 320
 
-  // group month header
+  // month groups for header
   const monthGroups = useMemo(() => {
     const groups = []
     let cur = null
     dates.forEach(d => {
-      const ym = d.slice(0,7)
-      if (!cur || cur.ym !== ym) { cur = { ym, label: `${MONTHS_TH[parseInt(d.slice(5,7))-1]} ${parseInt(d.slice(0,4))+543}`, count:1 }; groups.push(cur) }
-      else cur.count++
+      const ym = d.slice(0, 7)
+      if (!cur || cur.ym !== ym) {
+        cur = { ym, label: `${MONTHS_TH[parseInt(d.slice(5, 7)) - 1]} ${parseInt(d.slice(0, 4)) + 543}`, count: 1 }
+        groups.push(cur)
+      } else cur.count++
     })
     return groups
   }, [dates])
 
-  // filter + group by DocNo
-  const grouped = useMemo(() => {
-    const docColorMap = {}
-    let colorIdx = 0
-    const filtered = plans.filter(p => {
+  const move = n => setAnchor(addDays(anchor, n * (viewMode === '2w' ? 7 : viewMode === '1m' ? 14 : 30)))
+
+  // filter plans
+  const filteredPlans = useMemo(() => {
+    return plans.filter(p => {
       if (!p.startDate || !p.endDate) return false
-      if (p.endDate < anchor || p.startDate > endAnchor) return false
-      const isProj = !!p.isProject || jobs.find(j=>j['เลขที่']===p.jobNo)?.['ประเภท']==='โครงการ'
-      if (filterType==='project' && !isProj) return false
-      if (filterType==='general' && isProj) return false
+      const isProj = !!p.isProject || jobs.find(j => j['เลขที่'] === p.jobNo)?.['ประเภท'] === 'โครงการ'
+      if (filterType === 'project' && !isProj) return false
+      if (filterType === 'general' && isProj) return false
       if (search) {
         const q = search.toLowerCase()
-        if (!p.taskName?.toLowerCase().includes(q) && !p.jobNo?.toLowerCase().includes(q)) return false
+        if (!p.taskName?.toLowerCase().includes(q) && !p.jobNo?.toLowerCase().includes(q) &&
+            !p.assignee?.toLowerCase().includes(q)) return false
       }
       return true
     })
+  }, [plans, filterType, search, jobs])
 
-    // assign color per docNo
-    const map = {}
-    filtered.forEach(p => {
-      const key = p.jobNo || p.taskName || 'unknown'
-      if (!map[key]) {
-        if (!docColorMap[key]) { docColorMap[key] = PROJ_COLORS[colorIdx % PROJ_COLORS.length]; colorIdx++ }
-        map[key] = { docNo: key, color: docColorMap[key], tasks: [] }
-      }
-      map[key].tasks.push(p)
-    })
-    return Object.values(map)
-  }, [plans, anchor, endAnchor, filterType, search, jobs])
+  const grouped = useMemo(() => buildTree(filteredPlans), [filteredPlans])
 
-  const move = (n) => setAnchor(addDays(anchor, n * (viewMode==='2w'?7:viewMode==='1m'?14:30)))
-  const jumpToday = () => setAnchor(getMondayOf(today))
+  // color map per docNo
+  const colorMap = useMemo(() => {
+    const m = {}
+    grouped.forEach(({ docNo }, i) => { m[docNo] = DOC_COLORS[i % DOC_COLORS.length] })
+    return m
+  }, [grouped])
 
-  // ── helpers: position on timeline ──
-  const dayX = (iso) => {
-    const d = daysBetween(anchor, iso)
-    return Math.max(0, d) * COL_W
-  }
-  const barStyle = (s, e, color, prog) => {
-    const clampS = s < anchor ? anchor : s
-    const clampE = e > endAnchor ? endAnchor : e
-    const left  = dayX(clampS)
-    const width = Math.max(COL_W*0.5, (daysBetween(clampS,clampE)+1)*COL_W)
-    return { left, width, color, prog: Math.min(100, Math.max(0, parseFloat(prog||0))) }
+  // Gantt position helpers
+  const dayX = iso => Math.max(0, daysBetween(anchor, iso)) * COL_W
+  const barLeft  = iso => dayX(iso < anchor ? anchor : iso)
+  const barWidth = (s, e) => {
+    const cs = s < anchor ? anchor : s
+    const ce = e > endAnchor ? endAnchor : e
+    return Math.max(COL_W * 0.4, (daysBetween(cs, ce) + 1) * COL_W)
   }
 
-  const totalW = displayDays * COL_W
+  // update a plan field
+  const updatePlan = (id, key, val) => {
+    setPlans(ps => ps.map(p => p.id === id ? { ...p, [key]: val } : p))
+  }
+  const deletePlan = id => { if (window.confirm('ลบแผนงานนี้?')) setPlans(ps => ps.filter(p => p.id !== id)) }
 
-  // scroll so today is visible on mount
   useEffect(() => {
     if (scrollRef.current) {
-      const todayOffset = dayX(today)
-      scrollRef.current.scrollLeft = Math.max(0, todayOffset - 200)
+      const off = dayX(today)
+      scrollRef.current.scrollLeft = Math.max(0, off - 150)
     }
   }, [anchor, COL_W])
 
-  const toggleCollapse = (key) => setCollapsed(p => ({...p,[key]:!p[key]}))
+  // ── render row helper ──────────────────────────────────────────
+  const STATUS_OPTIONS = ['รอดำเนินการ', 'กำลังดำเนินการ', 'เสร็จแล้ว', 'ยกเลิก']
 
-  // status label + dot
-  const StatusDot = ({status}) => {
-    const c = STATUS_COLORS[status] || '#94a3b8'
-    return <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{background:c, flexShrink:0}}/>
+  function PlanRow({ plan, docColor }) {
+    const level  = detectLevel(plan.taskName)
+    const sc     = scolor(plan.status)
+    const prog   = Math.min(100, Math.max(0, parseFloat(plan.progress || 0)))
+    const inView = plan.startDate && plan.endDate && !(plan.endDate < anchor || plan.startDate > endAnchor)
+    const indentPx = level > 1 ? (level - 1) * 16 : 0
+
+    return (
+      <div className="flex border-b hover:bg-white/[0.025] group/row transition-colors"
+        style={{ borderColor: '#0f2235', minHeight: 38 }}>
+
+        {/* LABEL */}
+        <div className="shrink-0 flex items-center gap-1.5 px-2 py-1.5"
+          style={{ width: LABEL_W, borderRight: '1px solid #0f2235', paddingLeft: 8 + indentPx }}>
+          {/* level indicator */}
+          {level > 1 && <div className="shrink-0 w-px self-stretch my-1 rounded" style={{ background: docColor + '50' }} />}
+          {/* status dot */}
+          <div className="shrink-0 w-2 h-2 rounded-full" style={{ background: sc.border }} />
+          {/* task name — editable */}
+          <div className="min-w-0 flex-1">
+            <EditCell value={plan.taskName} onChange={v => updatePlan(plan.id, 'taskName', v)}
+              style={{ fontSize: level === 0 ? 12 : level === 1 ? 11.5 : 11, color: level > 1 ? '#94a3b8' : '#e2e8f0', fontWeight: level <= 1 ? 500 : 400 }} />
+            <div className="text-xs mt-0.5 flex items-center gap-1.5" style={{ color: '#4a6584' }}>
+              <EditCell value={plan.assignee || ''} onChange={v => updatePlan(plan.id, 'assignee', v)} style={{ fontSize: 10 }} />
+            </div>
+          </div>
+          {/* progress pill */}
+          <div className="shrink-0 flex items-center gap-1">
+            <div className="relative rounded overflow-hidden" style={{ width: 40, height: 4, background: '#1e3a5f' }}>
+              <div className="absolute left-0 top-0 h-full rounded" style={{ width: `${prog}%`, background: prog >= 100 ? '#4ade80' : prog > 50 ? '#60a5fa' : '#fbbf24', transition: 'width 0.3s' }} />
+            </div>
+            <EditCell value={String(Math.round(prog))} onChange={v => updatePlan(plan.id, 'progress', v)} type="number"
+              style={{ fontSize: 10, color: prog >= 100 ? '#4ade80' : prog > 50 ? '#60a5fa' : '#fbbf24', minWidth: 24, textAlign: 'right' }} />
+            <span style={{ fontSize: 9, color: '#4a6584' }}>%</span>
+          </div>
+          {/* status badge - editable */}
+          <EditCell value={plan.status} onChange={v => updatePlan(plan.id, 'status', v)} options={STATUS_OPTIONS}
+            style={{ fontSize: 9, color: sc.text, padding: '1px 5px', borderRadius: 4, background: sc.bg, border: `1px solid ${sc.border}50`, whiteSpace: 'nowrap', flexShrink: 0 }} />
+          {/* delete — only local plans */}
+          {!plan.fromSheet && (
+            <button onClick={() => deletePlan(plan.id)}
+              className="opacity-0 group-hover/row:opacity-100 text-steel-700 hover:text-red-400 transition-all p-0.5 shrink-0">
+              <Trash2 size={11} />
+            </button>
+          )}
+        </div>
+
+        {/* GANTT */}
+        <div className="flex-1 relative" style={{ minHeight: 38 }}>
+          {/* weekend/holiday shading */}
+          {dates.map(d => {
+            const dow = new Date(d).getDay()
+            if (dow !== 0 && dow !== 6 && !holidaySet.has(d)) return null
+            return <div key={d} className="absolute inset-y-0" style={{ left: dayX(d), width: COL_W, background: 'rgba(248,113,113,0.04)' }} />
+          })}
+          {/* today line */}
+          {today >= anchor && today <= endAnchor && (
+            <div className="absolute inset-y-0" style={{ left: dayX(today) + COL_W / 2, width: 1.5, background: 'rgba(56,139,253,0.7)', zIndex: 5 }} />
+          )}
+          {/* Plan bar */}
+          {inView && plan.startDate && plan.endDate && (
+            <div className="absolute rounded flex items-center overflow-hidden"
+              title={`แผน: ${plan.startDate} → ${plan.endDate}\nจริง: ${plan.actualStart || '–'} → ${plan.actualEnd || '–'}\nProgress: ${prog}%`}
+              style={{
+                left: barLeft(plan.startDate), width: barWidth(plan.startDate, plan.endDate),
+                top: '50%', transform: 'translateY(-50%)',
+                height: level > 1 ? 16 : 20,
+                background: sc.bg, border: `1px solid ${sc.border}60`,
+                minWidth: 4, zIndex: 2
+              }}>
+              <div className="h-full" style={{ width: `${prog}%`, background: sc.border + '70' }} />
+              {barWidth(plan.startDate, plan.endDate) > 50 && (
+                <span className="absolute inset-0 flex items-center px-1.5 truncate"
+                  style={{ color: sc.text, fontSize: '0.6rem', fontWeight: 500 }}>
+                  {prog > 0 ? `${Math.round(prog)}%` : ''} {COL_W >= 32 ? plan.taskName : ''}
+                </span>
+              )}
+            </div>
+          )}
+          {/* Actual bar */}
+          {inView && plan.actualStart && plan.actualEnd && (
+            <div className="absolute rounded"
+              style={{
+                left: barLeft(plan.actualStart), width: barWidth(plan.actualStart, plan.actualEnd),
+                top: '50%', transform: `translateY(${level > 1 ? '-15%' : '30%'})`,
+                height: level > 1 ? 5 : 7,
+                background: '#4ade8080', border: '1px solid #4ade8080',
+                minWidth: 4, zIndex: 3, opacity: 0.85
+              }} />
+          )}
+        </div>
+      </div>
+    )
   }
 
+  // ── main render ───────────────────────────────────────────────
   return (
     <div className="space-y-3">
-      {/* ── Toolbar ── */}
+      {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap">
-        {/* nav */}
-        <div className="flex items-center rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
-          <button onClick={()=>move(-1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronLeft size={14}/></button>
-          <button onClick={jumpToday} className="px-3 py-1.5 text-xs text-steel-400 hover:text-white transition-colors border-x border-steel-800">วันนี้</button>
-          <button onClick={()=>move(1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronRight size={14}/></button>
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: '1px solid #1e3a5f' }}>
+          <button onClick={() => move(-1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronLeft size={14} /></button>
+          <button onClick={() => setAnchor(getMondayOf(today))} className="px-3 py-1.5 text-xs text-steel-400 hover:text-white transition-colors border-x border-steel-800">วันนี้</button>
+          <button onClick={() => move(1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronRight size={14} /></button>
         </div>
         <span className="text-white text-sm font-semibold">{fmtDateTH(anchor)} – {fmtDateTH(endAnchor)}</span>
 
-        {/* view mode */}
-        <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{border:'1px solid #1e3a5f'}}>
-          {[['2w','2 สัปดาห์'],['1m','1 เดือน'],['3m','3 เดือน']].map(([v,l])=>(
-            <button key={v} onClick={()=>setViewMode(v)} className="px-3 py-1.5 text-xs transition-colors"
-              style={{background:viewMode===v?'rgba(56,139,253,0.2)':'transparent', color:viewMode===v?'#60a5fa':'#4a6584'}}>
-              {l}
-            </button>
+        <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{ border: '1px solid #1e3a5f' }}>
+          {[['2w', '2 สัปดาห์'], ['1m', '1 เดือน'], ['3m', '3 เดือน']].map(([v, l]) => (
+            <button key={v} onClick={() => setViewMode(v)} className="px-3 py-1.5 text-xs transition-colors"
+              style={{ background: viewMode === v ? 'rgba(56,139,253,0.2)' : 'transparent', color: viewMode === v ? '#60a5fa' : '#4a6584' }}>{l}</button>
           ))}
         </div>
 
-        {/* filter type */}
-        <div className="flex items-center rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
-          {[['all','ทั้งหมด'],['project','โครงการ'],['general','ทั่วไป']].map(([v,l])=>(
-            <button key={v} onClick={()=>setFilterType(v)} className="px-3 py-1.5 text-xs transition-colors"
-              style={{background:filterType===v?'rgba(56,139,253,0.2)':'transparent', color:filterType===v?'#60a5fa':'#4a6584'}}>
-              {l}
-            </button>
+        <div className="flex items-center rounded-lg overflow-hidden" style={{ border: '1px solid #1e3a5f' }}>
+          {[['all', 'ทั้งหมด'], ['project', 'โครงการ'], ['general', 'ทั่วไป']].map(([v, l]) => (
+            <button key={v} onClick={() => setFilterType(v)} className="px-3 py-1.5 text-xs transition-colors"
+              style={{ background: filterType === v ? 'rgba(56,139,253,0.2)' : 'transparent', color: filterType === v ? '#60a5fa' : '#4a6584' }}>{l}</button>
           ))}
         </div>
 
-        {/* search */}
         <div className="relative">
-          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-steel-500"/>
-          <input className="pl-7 pr-3 py-1.5 text-xs w-44" placeholder="ค้นหา..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-steel-500" />
+          <input className="pl-7 pr-3 py-1.5 text-xs w-44" placeholder="ค้นหางาน / ผู้รับผิดชอบ..."
+            value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
-        <button onClick={()=>setShowAdd(true)}
+        <button onClick={() => setShowAdd(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
-          style={{background:'linear-gradient(135deg,#1d6fd8,#1a56b0)'}}>
-          <Plus size={13}/> เพิ่มแผนงาน
+          style={{ background: 'linear-gradient(135deg,#1d6fd8,#1a56b0)' }}>
+          <Plus size={13} /> เพิ่มแผนงาน
         </button>
       </div>
 
-      {/* ── Legend ── */}
-      <div className="flex items-center gap-4 text-xs text-steel-500">
-        {Object.entries(STATUS_COLORS).map(([s,c])=>(
-          <span key={s} className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-sm inline-block" style={{background:c+'40',border:`1px solid ${c}70`}}/>
-            {s}
-          </span>
-        ))}
-        <span className="flex items-center gap-1 ml-2">
-          <span className="w-px h-4 inline-block" style={{background:'rgba(56,139,253,0.7)'}}/>วันนี้
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded-sm inline-block" style={{background:'rgba(248,113,113,0.08)'}}/>วันหยุด/เสาร์-อาทิตย์
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-steel-500 flex-wrap">
+        <span className="flex items-center gap-1.5"><span className="inline-block w-8 h-3 rounded" style={{ background: '#60a5fa30', border: '1px solid #60a5fa60' }} />แผนงาน (Plan)</span>
+        <span className="flex items-center gap-1.5"><span className="inline-block w-8 h-2 rounded" style={{ background: '#4ade8080' }} />จริง (Actual)</span>
+        <span className="flex items-center gap-1.5"><span className="inline-block w-px h-4" style={{ background: 'rgba(56,139,253,0.7)' }} />วันนี้</span>
+        <span className="flex items-center gap-1.5 ml-auto text-xs" style={{color:'#4a6584'}}>
+          💡 คลิกที่ชื่องาน / ผู้รับผิดชอบ / % / สถานะ เพื่อแก้ไข
         </span>
       </div>
 
-      {/* ── Gantt body ── */}
-      <div className="rounded-xl overflow-hidden" style={{border:'1px solid #1e3a5f', background:'#050e1a'}}>
+      {/* Gantt */}
+      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #1e3a5f', background: '#050e1a' }}>
         {grouped.length === 0 ? (
           <div className="py-20 text-center text-steel-600 text-sm">ไม่มีแผนงานในช่วงนี้</div>
         ) : (
-          <div className="flex" style={{height:'calc(100vh - 340px)', minHeight:300}}>
-
-            {/* LEFT: label column (sticky) */}
-            <div className="shrink-0 overflow-y-auto overflow-x-hidden border-r border-steel-800" style={{width:LABEL_W}}>
-              {/* header spacer */}
-              <div style={{height:48}}/>
-              {grouped.map(({docNo, color, tasks}) => {
+          <div className="flex" style={{ height: 'calc(100vh - 320px)', minHeight: 350 }}>
+            {/* LEFT sticky label */}
+            <div className="shrink-0 border-r border-steel-900 overflow-y-auto" style={{ width: LABEL_W }}>
+              {/* column headers */}
+              <div className="sticky top-0 z-10 flex items-center px-2 py-1.5 border-b border-steel-800"
+                style={{ background: '#050e1a', height: 49 }}>
+                <span className="text-xs font-semibold" style={{ color: '#4a6584' }}>งาน / รายการ</span>
+                <span className="ml-auto text-xs" style={{ color: '#4a6584' }}>% / สถานะ</span>
+              </div>
+              {/* rows */}
+              {grouped.map(({ docNo, tasks, avgProgress, groupStart, groupEnd }) => {
+                const docColor = colorMap[docNo]
                 const isCol = collapsed[docNo]
-                const docStart = tasks.reduce((mn,t)=>t.startDate<mn?t.startDate:mn, tasks[0]?.startDate||'')
-                const docEnd   = tasks.reduce((mx,t)=>t.endDate>mx?t.endDate:mx, tasks[0]?.endDate||'')
-                const pct = tasks.length ? Math.round(tasks.reduce((s,t)=>s+parseFloat(t.progress||0),0)/tasks.length) : 0
                 return (
                   <div key={docNo}>
                     {/* Group header */}
-                    <div className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-white/5 select-none border-b border-steel-800/50"
-                      onClick={()=>toggleCollapse(docNo)}
-                      style={{background:'rgba(255,255,255,0.02)', borderLeft:`3px solid ${color}`}}>
-                      <ChevronDown size={12} className="text-steel-500 shrink-0 transition-transform" style={{transform:isCol?'rotate(-90deg)':'rotate(0deg)'}}/>
+                    <div className="flex items-center gap-2 px-2 py-2 cursor-pointer select-none border-b border-steel-800 hover:bg-white/5"
+                      onClick={() => setCollapsed(p => ({ ...p, [docNo]: !p[docNo] }))}
+                      style={{ background: 'rgba(255,255,255,0.03)', borderLeft: `3px solid ${docColor}` }}>
+                      <ChevronDown size={11} className="text-steel-500 shrink-0 transition-transform duration-200"
+                        style={{ transform: isCol ? 'rotate(-90deg)' : 'rotate(0deg)' }} />
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-white truncate" style={{color}}>{docNo}</div>
-                        <div className="text-xs text-steel-500 flex items-center gap-1">
-                          <span>{tasks.length} งาน</span>
-                          <span>·</span>
-                          <span className="font-medium" style={{color: pct>=100?'#4ade80':pct>50?'#60a5fa':'#fbbf24'}}>{pct}%</span>
-                        </div>
+                        <div className="text-xs font-bold truncate" style={{ color: docColor }}>{docNo}</div>
+                        <div className="text-xs" style={{ color: '#4a6584' }}>{tasks.length} งาน · {groupStart && groupEnd ? `${fmtDateTH(groupStart)} – ${fmtDateTH(groupEnd)}` : ''}</div>
+                      </div>
+                      <div className="shrink-0 text-xs font-bold" style={{ color: avgProgress >= 100 ? '#4ade80' : avgProgress > 50 ? '#60a5fa' : '#fbbf24' }}>
+                        {avgProgress}%
                       </div>
                     </div>
-                    {/* Sub-tasks */}
-                    {!isCol && tasks.map((t,ti)=>(
-                      <div key={t.id||ti} className="flex items-center gap-2 px-3 py-2 border-b border-steel-800/20 hover:bg-white/[0.02] group"
-                        style={{borderLeft:`3px solid ${color}30`}}>
-                        <StatusDot status={t.status}/>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs text-steel-200 truncate leading-tight">{t.taskName}</div>
-                          <div className="text-xs text-steel-600 truncate">{t.assignee||'–'}</div>
-                        </div>
-                      </div>
+                    {/* Task rows */}
+                    {!isCol && tasks.map((t, ti) => (
+                      <PlanRow key={t.id || ti} plan={t} docColor={docColor} />
                     ))}
                   </div>
                 )
               })}
             </div>
 
-            {/* RIGHT: Gantt timeline (scrollable) */}
+            {/* RIGHT timeline */}
             <div ref={scrollRef} className="flex-1 overflow-auto">
-              <div style={{width:totalW, minWidth:'100%'}}>
-
+              <div style={{ width: totalW, minWidth: '100%' }}>
                 {/* Month header */}
-                <div className="flex sticky top-0 z-20" style={{background:'#050e1a', borderBottom:'1px solid #1e3a5f', height:24}}>
-                  {monthGroups.map(g=>(
-                    <div key={g.ym} className="flex items-center justify-center text-xs text-steel-400 font-semibold border-r border-steel-800 shrink-0"
-                      style={{width:g.count*COL_W}}>
-                      {g.label}
-                    </div>
+                <div className="flex sticky top-0 z-20" style={{ background: '#050e1a', borderBottom: '1px solid #1e3a5f', height: 24 }}>
+                  {monthGroups.map(g => (
+                    <div key={g.ym} className="flex items-center justify-center text-xs font-semibold border-r border-steel-800 shrink-0"
+                      style={{ width: g.count * COL_W, color: '#4a6584' }}>{g.label}</div>
                   ))}
                 </div>
-
                 {/* Day header */}
-                <div className="flex sticky top-6 z-20" style={{background:'#050e1a', borderBottom:'1px solid #1e3a5f', height:24}}>
-                  {dates.map(d=>{
-                    const isToday = d===today
+                <div className="flex sticky top-6 z-20" style={{ background: '#050e1a', borderBottom: '1px solid #1e3a5f', height: 25 }}>
+                  {dates.map(d => {
+                    const isToday = d === today
                     const dow = new Date(d).getDay()
-                    const isWeekend = dow===0||dow===6
-                    const isHol = holidaySet.has(d)
+                    const isWeekend = dow === 0 || dow === 6
                     return (
                       <div key={d} className="shrink-0 flex flex-col items-center justify-center border-r border-steel-800/40 text-xs"
-                        style={{
-                          width:COL_W,
-                          background:isToday?'rgba(56,139,253,0.15)':isHol||isWeekend?'rgba(248,113,113,0.05)':'transparent',
-                          color:isToday?'#60a5fa':isHol?'#f87171':isWeekend?'#475569':'#4a6584'
-                        }}>
-                        {COL_W >= 30 ? (
-                          <>
-                            <span style={{fontSize:10, fontWeight:isToday?700:400}}>{new Date(d).getDate()}</span>
-                            {COL_W >= 38 && <span style={{fontSize:8}}>{WEEKDAYS_TH[dow]}</span>}
-                          </>
-                        ) : (
-                          <span style={{fontSize:9}}>{new Date(d).getDate()}</span>
+                        style={{ width: COL_W, background: isToday ? 'rgba(56,139,253,0.15)' : isWeekend || holidaySet.has(d) ? 'rgba(248,113,113,0.05)' : 'transparent', color: isToday ? '#60a5fa' : isWeekend ? '#475569' : '#4a6584' }}>
+                        <span style={{ fontSize: 10, fontWeight: isToday ? 700 : 400 }}>{new Date(d).getDate()}</span>
+                        {COL_W >= 32 && <span style={{ fontSize: 8 }}>{WEEKDAYS_TH[dow]}</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Gantt rows — must match left panel */}
+                {/* header spacer */}
+                <div style={{ height: 49, borderBottom: '1px solid #0f2235' }} />
+                {grouped.map(({ docNo, tasks, groupStart, groupEnd, avgProgress }) => {
+                  const docColor = colorMap[docNo]
+                  const isCol = collapsed[docNo]
+                  return (
+                    <div key={docNo}>
+                      {/* Group row */}
+                      <div className="relative border-b" style={{ height: 49, background: 'rgba(255,255,255,0.015)', borderColor: '#1e3a5f' }}>
+                        {dates.map(d => { const dow = new Date(d).getDay(); if (dow !== 0 && dow !== 6 && !holidaySet.has(d)) return null; return <div key={d} className="absolute inset-y-0" style={{ left: dayX(d), width: COL_W, background: 'rgba(248,113,113,0.04)' }} /> })}
+                        {today >= anchor && today <= endAnchor && <div className="absolute inset-y-0" style={{ left: dayX(today) + COL_W / 2, width: 1.5, background: 'rgba(56,139,253,0.7)', zIndex: 5 }} />}
+                        {/* group summary bar */}
+                        {groupStart && groupEnd && (
+                          <div className="absolute rounded flex items-center overflow-hidden"
+                            style={{ left: barLeft(groupStart), width: barWidth(groupStart, groupEnd), top: '50%', transform: 'translateY(-50%)', height: 18, background: docColor + '18', border: `1.5px solid ${docColor}60`, minWidth: 6, zIndex: 2 }}>
+                            <div className="h-full rounded" style={{ width: `${avgProgress}%`, background: docColor + '40' }} />
+                            <span className="absolute inset-0 flex items-center px-2 text-xs font-semibold truncate" style={{ color: docColor, fontSize: '0.62rem' }}>
+                              {avgProgress}% · {tasks.length} งาน
+                            </span>
+                          </div>
                         )}
                       </div>
-                    )
-                  })}
-                </div>
-
-                {/* Gantt rows */}
-                <div style={{paddingTop:0}}>
-                  {grouped.map(({docNo, color, tasks})=>{
-                    const isCol = collapsed[docNo]
-                    // row height same as label column
-                    const GROUP_ROW_H = 52
-                    const TASK_ROW_H  = 44
-                    return (
-                      <div key={docNo}>
-                        {/* Group header row */}
-                        <div className="relative border-b border-steel-800/50"
-                          style={{height:GROUP_ROW_H, background:'rgba(255,255,255,0.015)'}}>
-                          {/* Weekend/holiday shading */}
-                          {dates.map(d=>{
-                            const dow=new Date(d).getDay()
-                            const isW=dow===0||dow===6
-                            const isH=holidaySet.has(d)
-                            if(!isW&&!isH) return null
-                            return <div key={d} className="absolute top-0 bottom-0" style={{left:dayX(d),width:COL_W,background:'rgba(248,113,113,0.04)'}}/>
-                          })}
-                          {/* Today line */}
-                          {today>=anchor&&today<=endAnchor&&(
-                            <div className="absolute top-0 bottom-0 z-10" style={{left:dayX(today)+COL_W/2,width:1.5,background:'rgba(56,139,253,0.7)'}}/>
-                          )}
-                          {/* Group summary bar (min–max span) */}
-                          {tasks.length > 0 && (()=>{
-                            const gs = tasks.reduce((mn,t)=>t.startDate&&t.startDate<mn?t.startDate:mn,'9999')
-                            const ge = tasks.reduce((mx,t)=>t.endDate&&t.endDate>mx?t.endDate:mx,'0000')
-                            if(!gs||!ge||gs==='9999') return null
-                            const bs = barStyle(gs,ge,color,tasks.reduce((s,t)=>s+parseFloat(t.progress||0),0)/tasks.length)
-                            return (
+                      {/* task rows */}
+                      {!isCol && tasks.map((t, ti) => {
+                        const level = detectLevel(t.taskName)
+                        const sc = scolor(t.status)
+                        const prog = Math.min(100, Math.max(0, parseFloat(t.progress || 0)))
+                        const inView = t.startDate && t.endDate && !(t.endDate < anchor || t.startDate > endAnchor)
+                        return (
+                          <div key={t.id || ti} className="relative border-b"
+                            style={{ height: 38, background: ti % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.008)', borderColor: '#0f2235' }}>
+                            {dates.map(d => { const dow = new Date(d).getDay(); if (dow !== 0 && dow !== 6 && !holidaySet.has(d)) return null; return <div key={d} className="absolute inset-y-0" style={{ left: dayX(d), width: COL_W, background: 'rgba(248,113,113,0.03)' }} /> })}
+                            {today >= anchor && today <= endAnchor && <div className="absolute inset-y-0" style={{ left: dayX(today) + COL_W / 2, width: 1, background: 'rgba(56,139,253,0.4)', zIndex: 5 }} />}
+                            {/* plan bar */}
+                            {inView && t.startDate && t.endDate && (
                               <div className="absolute rounded flex items-center overflow-hidden"
-                                style={{left:bs.left, width:bs.width, top:'50%', transform:'translateY(-50%)', height:20,
-                                  background:`${color}15`, border:`1.5px solid ${color}60`}}>
-                                <div className="h-full rounded" style={{width:`${bs.prog}%`,background:`${color}40`}}/>
-                                <span className="absolute inset-0 flex items-center px-2 text-xs font-semibold truncate" style={{color, fontSize:'0.65rem'}}>
-                                  {tasks.length} งาน · {Math.round(bs.prog)}%
-                                </span>
+                                title={`${t.taskName}\n${t.startDate} → ${t.endDate} | ${prog}%`}
+                                style={{ left: barLeft(t.startDate), width: barWidth(t.startDate, t.endDate), top: '50%', transform: 'translateY(-50%)', height: level > 1 ? 14 : 18, background: sc.bg, border: `1px solid ${sc.border}60`, minWidth: 4, zIndex: 2 }}>
+                                <div className="h-full" style={{ width: `${prog}%`, background: sc.border + '70' }} />
+                                {barWidth(t.startDate, t.endDate) > 45 && (
+                                  <span className="absolute inset-0 flex items-center px-1.5 truncate" style={{ color: sc.text, fontSize: '0.58rem' }}>
+                                    {prog > 0 ? `${Math.round(prog)}%` : ''}
+                                  </span>
+                                )}
                               </div>
-                            )
-                          })()}
-                        </div>
-
-                        {/* Sub-task rows */}
-                        {!isCol && tasks.map((t,ti)=>{
-                          const sc = STATUS_COLORS[t.status]||'#60a5fa'
-                          const bs = t.startDate&&t.endDate ? barStyle(t.startDate,t.endDate,sc,t.progress) : null
-                          return (
-                            <div key={t.id||ti} className="relative border-b border-steel-800/20"
-                              style={{height:TASK_ROW_H, background:ti%2===0?'transparent':'rgba(255,255,255,0.008)'}}>
-                              {dates.map(d=>{
-                                const dow=new Date(d).getDay()
-                                if(dow!==0&&dow!==6&&!holidaySet.has(d)) return null
-                                return <div key={d} className="absolute top-0 bottom-0" style={{left:dayX(d),width:COL_W,background:'rgba(248,113,113,0.03)'}}/>
-                              })}
-                              {today>=anchor&&today<=endAnchor&&(
-                                <div className="absolute top-0 bottom-0 z-10" style={{left:dayX(today)+COL_W/2,width:1,background:'rgba(56,139,253,0.4)'}}/>
-                              )}
-                              {bs && (
-                                <div className="absolute rounded flex items-center overflow-hidden group/bar cursor-pointer"
-                                  title={`${t.taskName}\n${t.assignee} · ${t.status} · ${bs.prog}%\n${t.startDate} → ${t.endDate}`}
-                                  style={{left:bs.left, width:bs.width, top:'50%', transform:'translateY(-50%)', height:22,
-                                    background:`${sc}18`, border:`1px solid ${sc}50`, minWidth:4}}>
-                                  <div className="h-full rounded" style={{width:`${bs.prog}%`, background:`${sc}45`}}/>
-                                  {bs.width > 50 && (
-                                    <span className="absolute inset-0 flex items-center px-1.5 truncate" style={{color:sc, fontSize:'0.62rem', fontWeight:500}}>
-                                      {bs.prog>0?`${Math.round(bs.prog)}% `:''}
-                                      {COL_W>=38?t.taskName:''}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )
-                  })}
-                </div>
+                            )}
+                            {/* actual bar */}
+                            {inView && t.actualStart && t.actualEnd && (
+                              <div className="absolute rounded"
+                                style={{ left: barLeft(t.actualStart), width: barWidth(t.actualStart, t.actualEnd), top: '50%', transform: `translateY(${level > 1 ? '-10%' : '40%'})`, height: level > 1 ? 4 : 5, background: '#4ade8080', border: '1px solid #4ade8080', minWidth: 4, zIndex: 3 }} />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -523,12 +627,13 @@ function MasterPlan({ jobs, plans, setPlans, holidays }) {
       </div>
 
       {showAdd && (
-        <AddPlanModal jobs={jobs} onClose={()=>setShowAdd(false)}
-          onAdd={(p)=>{ setPlans(ps=>[...ps,{...p,id:Date.now().toString()}]); setShowAdd(false) }}/>
+        <AddPlanModal jobs={jobs} onClose={() => setShowAdd(false)}
+          onAdd={p => { setPlans(ps => [...ps, { ...p, id: Date.now().toString() }]); setShowAdd(false) }} />
       )}
     </div>
   )
 }
+
 
 // ── 3. DAILY PLAN ─────────────────────────────────────────────────
 function DailyPlan({ jobs, plans, holidays }) {

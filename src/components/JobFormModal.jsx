@@ -130,42 +130,57 @@ function serializeSubItems(items) {
 // ------------------------------------------------------------------ SubItemRow
 function SubItemRow({ item, idx, onChange, onRemove }) {
   const SUB_STATUSES = ['รอดำเนินการ', 'กำลังดำเนินการ', 'เสร็จแล้ว', 'ยกเลิก']
+  const lineTotal = (parseFloat(item.price || 0) * parseFloat(item.qty || 0))
   return (
-    <div className="grid grid-cols-12 gap-2 items-center p-2 rounded" style={{ background: '#0d2137' }}>
-      <div className="col-span-4">
-        <input
-          className="w-full text-xs"
-          placeholder="ชื่อรายการ..."
-          value={item.name}
-          onChange={e => onChange(idx, 'name', e.target.value)}
-        />
-      </div>
-      <div className="col-span-1">
-        <input className="w-full text-xs text-center" placeholder="จน." type="number" min="0"
+    <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg" style={{ background: '#0b1e30', border:'1px solid #1a3050' }}>
+      {/* เลข */}
+      <div className="text-xs text-steel-600 font-mono w-5 text-center shrink-0">{idx+1}</div>
+      {/* ชื่อ — ให้กว้างที่สุด */}
+      <input className="flex-1 text-xs" style={{minWidth:0}}
+        placeholder="ชื่อรายการ / รายละเอียด..."
+        value={item.name} onChange={e => onChange(idx, 'name', e.target.value)} />
+      {/* จำนวน */}
+      <div className="flex flex-col items-center shrink-0" style={{width:60}}>
+        <span className="text-xs text-steel-600 mb-0.5">จำนวน</span>
+        <input className="w-full text-xs text-center" type="number" min="0"
           value={item.qty} onChange={e => onChange(idx, 'qty', e.target.value)} />
       </div>
-      <div className="col-span-1">
-        <input className="w-full text-xs text-center" placeholder="ส่ง" type="number" min="0"
+      {/* ส่งแล้ว */}
+      <div className="flex flex-col items-center shrink-0" style={{width:52}}>
+        <span className="text-xs text-steel-600 mb-0.5">ส่งแล้ว</span>
+        <input className="w-full text-xs text-center" type="number" min="0"
           value={item.sent} onChange={e => onChange(idx, 'sent', e.target.value)} />
       </div>
-      <div className="col-span-1">
-        <input className="w-full text-xs text-center" placeholder="หน่วย"
+      {/* หน่วย */}
+      <div className="flex flex-col items-center shrink-0" style={{width:52}}>
+        <span className="text-xs text-steel-600 mb-0.5">หน่วย</span>
+        <input className="w-full text-xs text-center"
           value={item.unit} onChange={e => onChange(idx, 'unit', e.target.value)} />
       </div>
-      <div className="col-span-2">
+      {/* สถานะ */}
+      <div className="flex flex-col items-center shrink-0" style={{width:110}}>
+        <span className="text-xs text-steel-600 mb-0.5">สถานะ</span>
         <select className="w-full text-xs" value={item.status} onChange={e => onChange(idx, 'status', e.target.value)}>
           {SUB_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
       </div>
-      <div className="col-span-2">
-        <input className="w-full text-xs" placeholder="ราคา" type="number" min="0"
+      {/* ราคา/หน่วย */}
+      <div className="flex flex-col items-center shrink-0" style={{width:80}}>
+        <span className="text-xs text-steel-600 mb-0.5">ราคา/ชิ้น</span>
+        <input className="w-full text-xs text-right" type="number" min="0"
           value={item.price} onChange={e => onChange(idx, 'price', e.target.value)} />
       </div>
-      <div className="col-span-1 flex justify-end">
-        <button onClick={() => onRemove(idx)} className="text-steel-600 hover:text-red-400 p-1">
-          <Trash2 size={13} />
-        </button>
+      {/* รวมต่อบรรทัด */}
+      <div className="flex flex-col items-end shrink-0" style={{width:70}}>
+        <span className="text-xs text-steel-600 mb-0.5">รวม</span>
+        <span className="text-xs font-semibold" style={{color: lineTotal > 0 ? '#4ade80' : '#4a6584'}}>
+          {lineTotal > 0 ? '฿'+lineTotal.toLocaleString('th-TH',{minimumFractionDigits:0}) : '–'}
+        </span>
       </div>
+      {/* ลบ */}
+      <button onClick={() => onRemove(idx)} className="text-steel-700 hover:text-red-400 transition-colors shrink-0 p-1">
+        <Trash2 size={13} />
+      </button>
     </div>
   )
 }
@@ -604,20 +619,36 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
                 <div className="text-center py-6 text-steel-600 text-xs">ไม่มีรายการย่อย (สามารถเพิ่มได้ทีละรายการ)</div>
               ) : (
                 <div className="p-2 space-y-1.5">
-                  {/* Header */}
-                  <div className="grid grid-cols-12 gap-2 px-2 text-xs text-steel-600 font-medium">
-                    <div className="col-span-4">ชื่อรายการ</div>
-                    <div className="col-span-1 text-center">จน.</div>
-                    <div className="col-span-1 text-center">ส่ง</div>
-                    <div className="col-span-1 text-center">หน่วย</div>
-                    <div className="col-span-2">สถานะ</div>
-                    <div className="col-span-2">ราคา/ชิ้น</div>
-                    <div className="col-span-1"></div>
+                  {/* Header labels — match flex layout ของ SubItemRow */}
+                  <div className="flex items-center gap-2 px-3 text-xs font-medium" style={{color:'#4a6584'}}>
+                    <div style={{width:20}}>#</div>
+                    <div className="flex-1">ชื่อรายการ / รายละเอียด</div>
+                    <div style={{width:60}} className="text-center">จำนวน</div>
+                    <div style={{width:52}} className="text-center">ส่งแล้ว</div>
+                    <div style={{width:52}} className="text-center">หน่วย</div>
+                    <div style={{width:110}} className="text-center">สถานะ</div>
+                    <div style={{width:80}} className="text-right">ราคา/ชิ้น</div>
+                    <div style={{width:70}} className="text-right">รวม</div>
+                    <div style={{width:24}}/>
                   </div>
                   {subItems.map((it, idx) => (
                     <SubItemRow key={idx} item={it} idx={idx}
                       onChange={updateSubItem} onRemove={removeSubItem} />
                   ))}
+                  {/* Summary row */}
+                  <div className="flex items-center gap-2 px-3 pt-2 mt-1 border-t" style={{borderColor:'#1e3a5f'}}>
+                    <div style={{width:20}}/>
+                    <div className="flex-1 text-xs font-semibold text-steel-300">รวมทั้งหมด ({subItems.length} รายการ)</div>
+                    <div style={{width:60}} className="text-center text-xs font-bold text-blue-300">{totalQty.toLocaleString('th-TH')}</div>
+                    <div style={{width:52}}/>
+                    <div style={{width:52}}/>
+                    <div style={{width:110}}/>
+                    <div style={{width:80}}/>
+                    <div style={{width:70}} className="text-right text-xs font-bold text-green-400">
+                      ฿{subTotal.toLocaleString('th-TH',{minimumFractionDigits:0})}
+                    </div>
+                    <div style={{width:24}}/>
+                  </div>
                 </div>
               )}
             </div>
