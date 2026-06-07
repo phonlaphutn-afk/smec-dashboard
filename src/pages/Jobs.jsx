@@ -104,78 +104,9 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
     setJobNoFilter(''); setPoFilter(''); setPage(1)
   }
 
-  // ── Group rows ที่มีเลขที่ + PO เดียวกัน → รวมเป็นใบงานเดียว ──
-  // ── Group แถว Sheet ที่มีเลขที่+PO เดียวกัน → ใบงานเดียว ──
-  // แต่ละแถวใน Sheet = 1 sub-item (ชื่อ, qty, ราคา/หน่วย)
-  const groupedJobs = useMemo(() => {
-    const map = {}
-    const order = []
-    jobs.forEach(row => {
-      const docNo = row['เลขที่'] || ''
-      const po    = row['PO'] || ''
-      if (!docNo) return  // ข้ามแถวว่าง
-      const key = docNo + '||' + po
-
-      if (!map[key]) {
-        // แถวแรก → เป็น base ของใบงาน
-        const g = { ...row, _subRows: [] }
-        // เก็บข้อมูล sub-item ของแถวนี้
-        const subName  = row['รายการย่อย'] || ''
-        const subQty   = parseFloat(row['จำนวน'] || '0') || 0
-        const subSent  = parseFloat(row['จำนวนที่ส่ง'] || '0') || 0
-        const subPrice = parseFloat(String(row['ขาย/หน่วย'] || '0').replace(/[฿,]/g,'')) || 0
-        if (subName) {
-          g._subRows.push({ name: subName, qty: subQty, sent: subSent, price: subPrice, unit: row['หน่วย'] || 'ชิ้น', status: row['สถานะ'] || '' })
-        }
-        // รวม qty/sent/outstanding จาก sub-item
-        g['จำนวน']        = String(subQty)
-        g['จำนวนที่ส่ง']  = String(subSent)
-        g['จำนวนค้างส่ง'] = String(Math.max(0, subQty - subSent))
-        // ยอดขายรวมของใบงาน = sum(qty * price) ของทุก sub
-        g['ยอดขายรวม']   = String(subQty * subPrice)
-        map[key] = g
-        order.push(key)
-      } else {
-        const g = map[key]
-        const subName  = row['รายการย่อย'] || ''
-        const subQty   = parseFloat(row['จำนวน'] || '0') || 0
-        const subSent  = parseFloat(row['จำนวนที่ส่ง'] || '0') || 0
-        const subPrice = parseFloat(String(row['ขาย/หน่วย'] || '0').replace(/[฿,]/g,'')) || 0
-
-        if (subName) {
-          // เพิ่ม sub-item ใหม่ (ตรวจชื่อไม่ซ้ำ)
-          const exists = g._subRows.some(s => s.name === subName)
-          if (!exists) {
-            g._subRows.push({ name: subName, qty: subQty, sent: subSent, price: subPrice, unit: row['หน่วย'] || 'ชิ้น', status: row['สถานะ'] || '' })
-            // รวม qty
-            g['จำนวน']        = String((parseFloat(g['จำนวน']) || 0) + subQty)
-            g['จำนวนที่ส่ง']  = String((parseFloat(g['จำนวนที่ส่ง']) || 0) + subSent)
-            g['จำนวนค้างส่ง'] = String(Math.max(0, (parseFloat(g['จำนวน']) || 0) - (parseFloat(g['จำนวนที่ส่ง']) || 0)))
-            // รวมยอดขาย (เฉพาะของ sub นี้)
-            g['ยอดขายรวม'] = String((parseFloat(g['ยอดขายรวม']) || 0) + subQty * subPrice)
-          }
-        }
-        // อัปเดต field ระดับใบงาน ด้วยค่าล่าสุด
-        ;['สถานะ','ผู้รับผิดชอบ','วันที่ลงบันทึก','รายละเอียด','บริษัท','ประเภท','วันที่','วันที่เริ่ม','วันที่เสร็จ'].forEach(f => {
-          if (row[f] && !g[f]) g[f] = row[f]
-          else if (row[f] && f === 'สถานะ') g[f] = row[f]  // สถานะใช้ล่าสุด
-        })
-      }
-    })
-    // rebuild รายการย่อย string จาก _subRows (เพื่อให้ parseSubItems ทำงานได้)
-    return order.map(k => {
-      const g = map[k]
-      if (g._subRows && g._subRows.length > 0) {
-        g['รายการย่อย'] = g._subRows.map(s =>
-          `- ${s.name} (${s.qty}/${s.qty} ${s.unit}) [${s.status}] {P:${s.price}}`
-        ).join('\n')
-      }
-      return g
-    })
-  }, [jobs])
 
   const filtered = useMemo(() => {
-    let data = groupedJobs.filter(j => {
+    let data = jobs.filter(j => {
       const q = search.toLowerCase()
       const matchSearch = !q ||
         (j['เลขที่']||'').toLowerCase().includes(q) ||
@@ -206,7 +137,7 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
       return sort.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
     })
     return data
-  }, [groupedJobs, search, yearFilter, monthFilter, companyFilter, typeFilter, statusFilter, jobNoFilter, poFilter, sort])
+  }, [jobs, search, yearFilter, monthFilter, companyFilter, typeFilter, statusFilter, jobNoFilter, poFilter, sort])
 
   const paginated = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE)
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE)

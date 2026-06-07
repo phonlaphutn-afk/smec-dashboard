@@ -476,55 +476,13 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
         'ขาย/หน่วย': subItems.length > 0 ? '' : (form.price || ''),
       }
 
-      if (editJob) {
-        // ══ UPDATE ══════════════════════════════════════════
-        // 1. updateJob — แก้ field หลัก (ไม่ append แถวใหม่)
-        await postSheet({
-          action: 'updateJob',
-          data: {
-            เลขที่:          form.jobNo,
-            สถานะ:           form.status,
-            'วันที่สถานะ':   displayDate(form.statusDate),
-            'ผู้รับผิดชอบ':  companyName ? form.responsible : form.responsible,
-            หมายเหตุ:        form.remark,
-            รายละเอียด:      form.description,
-            PO:              form.po,
-            VAT:             form.vatPct || '7',
-            'ความถี่สั่งซื้อ': form.vatType || 'ครั้งเดียว',
-          }
-        })
+      // addJob = เพิ่มใหม่, updateJob = ลบเก่า + เขียนใหม่ทั้งก้อน
+      const action = editJob ? 'updateJob' : 'addJob'
+      const payload = subItems.length > 0
+        ? { ...baseRow, รายการย่อย: serializeSubItems(subItems), 'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`, 'ขาย/หน่วย': '' }
+        : baseRow
 
-        // 2. addJob — เฉพาะ sub-items ใหม่เท่านั้น (append)
-        const newSubItems = subItems.filter(it => !originalSubNames.has(it.name))
-        if (newSubItems.length > 0) {
-          const newTotal = newSubItems.reduce((s, it) => s + (parseFloat(it.price||0) * parseFloat(it.qty||0)), 0)
-          await postSheet({
-            action: 'addJob',
-            data: {
-              ...baseRow,
-              รายการย่อย: serializeSubItems(newSubItems),
-              'ยอดขายรวม': `฿${newTotal.toFixed(2)}`,
-              'ขาย/หน่วย': '',
-            }
-          })
-        }
-      } else {
-        // ══ ADD ════════════════════════════════════════════
-        if (subItems.length === 0) {
-          await postSheet({ action: 'addJob', data: baseRow })
-        } else {
-          await postSheet({
-            action: 'addJob',
-            data: {
-              ...baseRow,
-              รายการย่อย: serializeSubItems(subItems),
-              'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`,
-              'ขาย/หน่วย': '',
-            }
-          })
-        }
-      }
-      const res = { status: 'success' }
+      const res = await postSheet({ action, data: payload })
 
       if (res && res.status === 'success') {
         onSaved && onSaved()

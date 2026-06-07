@@ -2,8 +2,7 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzuTX5dfMwkhnkVUElKY
 
 export async function fetchSheet(action) {
   try {
-    const url = `${SCRIPT_URL}?action=${action}`
-    const res = await fetch(url)
+    const res = await fetch(`${SCRIPT_URL}?action=${action}`)
     const json = await res.json()
     if (json.status === 'success') return json.data || []
     return []
@@ -12,21 +11,18 @@ export async function fetchSheet(action) {
   }
 }
 
+// ส่งข้อมูลผ่าน GET โดย encode payload เป็น base64
+// วิธีนี้ไม่มี CORS preflight ทำให้ Apps Script รับได้ปกติ
 export async function postSheet(payload) {
-  // ส่งครั้งเดียวด้วย no-cors เสมอ — Apps Script ไม่รองรับ CORS จาก browser
-  // ใช้ no-cors ตรงๆ ไม่ต้อง fallback (หลีกเลี่ยงส่ง 2 ครั้ง)
   try {
-    await fetch(SCRIPT_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload),
-    })
-    // no-cors ไม่มี response body — ถือว่า success เสมอ
-    return { status: 'success' }
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+    const url = `${SCRIPT_URL}?method=post&payload=${encodeURIComponent(encoded)}`
+    const res = await fetch(url)
+    const json = await res.json()
+    return json
   } catch (e) {
     console.error('postSheet error:', e)
-    return { status: 'error', message: 'Network error: ' + e.message }
+    return { status: 'error', message: e.message }
   }
 }
 
