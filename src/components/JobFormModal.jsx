@@ -27,27 +27,24 @@ async function extractFromPDF(base64Data, mimeType) {
 
 ถ้าข้อมูลใดไม่มีในเอกสาร ให้ใส่ "" (string ว่าง) หรือ [] สำหรับ array`
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  // ส่งผ่าน Apps Script เป็น proxy เพราะ browser ไม่สามารถเรียก api.anthropic.com ตรงได้ (CORS)
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzuTX5dfMwkhnkVUElKYX1FD6DhymJQB4qWT3aQZkpAkn1dmYjMpezYvqg_Zw1YmMT8cg/exec'
+  const res = await fetch(SCRIPT_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'document',
-          source: { type: 'base64', media_type: mimeType, data: base64Data }
-        }, {
-          type: 'text',
-          text: 'สกัดข้อมูลจากเอกสารนี้และตอบเป็น JSON ตามรูปแบบที่กำหนด'
-        }]
-      }]
+      action: 'extractPDF',
+      pdfBase64: base64Data,
+      systemPrompt: systemPrompt,
     })
   })
-  const data = await response.json()
-  const text = data.content?.find(b => b.type === 'text')?.text || '{}'
+  if (res.type === 'opaque') throw new Error('Apps Script ไม่ตอบกลับ — กรุณาเพิ่ม extractPDF ใน Apps Script')
+  const resText = await res.text()
+  let parsed
+  try { parsed = JSON.parse(resText) } catch { throw new Error('Apps Script ตอบกลับไม่ถูกรูปแบบ') }
+  if (parsed.status === 'error') throw new Error(parsed.message || 'extractPDF failed')
+  const text = parsed.result || '{}'
   return JSON.parse(text.replace(/```json|```/g, '').trim())
 }
 
@@ -240,7 +237,16 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
     }
   }, [form.company, form.date, form.type])
 
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const set = (k, v) => setForm(f => {
+    const next = { ...f, [k]: v }
+    // คำนวณ ค้างส่ง อัตโนมัติ เมื่อ qty หรือ sentQty เปลี่ยน
+    if (k === 'qty' || k === 'sentQty') {
+      const qty   = parseFloat(k === 'qty'    ? v : next.qty    || 0) || 0
+      const sent  = parseFloat(k === 'sentQty' ? v : next.sentQty || 0) || 0
+      next.outstandingQty = String(Math.max(0, qty - sent))
+    }
+    return next
+  })
 
   // Calculations — ถ้ามี subItems ให้ sum จากแต่ละรายการ
   const subTotal = subItems.length > 0
@@ -253,6 +259,16 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
 
   const vatAmount = (subTotal * parseFloat(form.vatPct || 7)) / 100
   const grandTotal = subTotal + vatAmount
+
+  // sync outstandingQty เมื่อ totalQty หรือ sentQty เปลี่ยน
+  useEffect(() => {
+    if (!open) return
+    const sent = parseFloat(form.sentQty || 0) || 0
+    const outstanding = Math.max(0, totalQty - sent)
+    if (String(outstanding) !== form.outstandingQty) {
+      setForm(f => ({ ...f, outstandingQty: String(outstanding) }))
+    }
+  }, [totalQty, form.sentQty, open])
 
   // Sub items handlers
   const addSubItem = () => setSubItems(s => [...s, { name: '', qty: '1', sent: '0', unit: 'ชิ้น', status: 'รอดำเนินการ', price: '' }])
@@ -725,8 +741,16 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
               </div>
               <div>
                 <label className="form-label">จำนวนสินค้า (QTY)</label>
-                <input className="w-full" placeholder="ระบุจำนวนเพิ่ม..." type="number" min="0"
-                  value={form.qty} onChange={e => set('qty', e.target.value)} />
+                {subItems.length > 0 ? (
+                  <div className="w-full px-3 py-2 rounded text-sm font-bold text-blue-300 flex items-center gap-2"
+                    style={{background:'rgba(56,139,253,0.1)', border:'1px solid rgba(56,139,253,0.3)'}}>
+                    <span>{totalQty.toLocaleString('th-TH')}</span>
+                    <span className="text-xs font-normal text-steel-500">ชิ้น (คำนวณจาก {subItems.length} รายการ)</span>
+                  </div>
+                ) : (
+                  <input className="w-full" placeholder="จำนวน..." type="number" min="0"
+                    value={form.qty} onChange={e => set('qty', e.target.value)} />
+                )}
               </div>
               <div>
                 <label className="form-label">ราคา/หน่วย (PRICE)</label>
@@ -741,9 +765,18 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
                   value={form.sentQty} onChange={e => set('sentQty', e.target.value)} />
               </div>
               <div>
-                <label className="form-label" style={{ color: '#f87171' }}>จำนวนค้างส่ง</label>
-                <input className="w-full" type="number" min="0"
-                  value={form.outstandingQty} onChange={e => set('outstandingQty', e.target.value)} />
+                <label className="form-label flex items-center gap-1.5">
+                  <span style={{color:'#f87171'}}>จำนวนค้างส่ง</span>
+                  <span className="text-xs font-normal text-steel-600">(= จำนวน – ส่งแล้ว)</span>
+                </label>
+                <div className="relative">
+                  <input className="w-full font-bold" type="number" min="0"
+                    style={{color: parseFloat(form.outstandingQty||0) > 0 ? '#f87171' : '#4ade80',
+                            background: parseFloat(form.outstandingQty||0) > 0 ? 'rgba(248,113,113,0.08)' : 'rgba(74,222,128,0.05)',
+                            border: parseFloat(form.outstandingQty||0) > 0 ? '1px solid rgba(248,113,113,0.3)' : '1px solid rgba(74,222,128,0.2)'}}
+                    value={form.outstandingQty} onChange={e => set('outstandingQty', e.target.value)} />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-steel-600">ชิ้น</span>
+                </div>
               </div>
               <div>
                 <label className="form-label">อ้างใบส่งของ DO</label>
