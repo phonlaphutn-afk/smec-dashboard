@@ -104,38 +104,73 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
   }
 
   // ── Group rows ที่มีเลขที่ + PO เดียวกัน → รวมเป็นใบงานเดียว ──
+  // ── Group แถว Sheet ที่มีเลขที่+PO เดียวกัน → ใบงานเดียว ──
+  // แต่ละแถวใน Sheet = 1 sub-item (ชื่อ, qty, ราคา/หน่วย)
   const groupedJobs = useMemo(() => {
     const map = {}
     const order = []
     jobs.forEach(row => {
-      const key = (row['เลขที่'] || '') + '||' + (row['PO'] || '')
+      const docNo = row['เลขที่'] || ''
+      const po    = row['PO'] || ''
+      if (!docNo) return  // ข้ามแถวว่าง
+      const key = docNo + '||' + po
+
       if (!map[key]) {
-        map[key] = { ...row, _rows: [row] }
+        // แถวแรก → เป็น base ของใบงาน
+        const g = { ...row, _subRows: [] }
+        // เก็บข้อมูล sub-item ของแถวนี้
+        const subName  = row['รายการย่อย'] || ''
+        const subQty   = parseFloat(row['จำนวน'] || '0') || 0
+        const subSent  = parseFloat(row['จำนวนที่ส่ง'] || '0') || 0
+        const subPrice = parseFloat(String(row['ขาย/หน่วย'] || '0').replace(/[฿,]/g,'')) || 0
+        if (subName) {
+          g._subRows.push({ name: subName, qty: subQty, sent: subSent, price: subPrice, unit: row['หน่วย'] || 'ชิ้น', status: row['สถานะ'] || '' })
+        }
+        // รวม qty/sent/outstanding จาก sub-item
+        g['จำนวน']        = String(subQty)
+        g['จำนวนที่ส่ง']  = String(subSent)
+        g['จำนวนค้างส่ง'] = String(Math.max(0, subQty - subSent))
+        // ยอดขายรวมของใบงาน = sum(qty * price) ของทุก sub
+        g['ยอดขายรวม']   = String(subQty * subPrice)
+        map[key] = g
         order.push(key)
       } else {
         const g = map[key]
-        // รวม sub-items
-        const existingLines = new Set(
-          (g['รายการย่อย'] || '').split('\n').map(l => l.trim()).filter(Boolean)
-        )
-        const newLines = (row['รายการย่อย'] || '').split('\n')
-          .map(l => l.trim()).filter(l => l && !existingLines.has(l))
-        if (newLines.length > 0) {
-          g['รายการย่อย'] = [g['รายการย่อย'], ...newLines].filter(Boolean).join('\n')
+        const subName  = row['รายการย่อย'] || ''
+        const subQty   = parseFloat(row['จำนวน'] || '0') || 0
+        const subSent  = parseFloat(row['จำนวนที่ส่ง'] || '0') || 0
+        const subPrice = parseFloat(String(row['ขาย/หน่วย'] || '0').replace(/[฿,]/g,'')) || 0
+
+        if (subName) {
+          // เพิ่ม sub-item ใหม่ (ตรวจชื่อไม่ซ้ำ)
+          const exists = g._subRows.some(s => s.name === subName)
+          if (!exists) {
+            g._subRows.push({ name: subName, qty: subQty, sent: subSent, price: subPrice, unit: row['หน่วย'] || 'ชิ้น', status: row['สถานะ'] || '' })
+            // รวม qty
+            g['จำนวน']        = String((parseFloat(g['จำนวน']) || 0) + subQty)
+            g['จำนวนที่ส่ง']  = String((parseFloat(g['จำนวนที่ส่ง']) || 0) + subSent)
+            g['จำนวนค้างส่ง'] = String(Math.max(0, (parseFloat(g['จำนวน']) || 0) - (parseFloat(g['จำนวนที่ส่ง']) || 0)))
+            // รวมยอดขาย (เฉพาะของ sub นี้)
+            g['ยอดขายรวม'] = String((parseFloat(g['ยอดขายรวม']) || 0) + subQty * subPrice)
+          }
         }
-        // รวม qty
-        const addNum = (a, b) => String((parseFloat(a) || 0) + (parseFloat(b) || 0))
-        g['จำนวน']        = addNum(g['จำนวน'],        row['จำนวน'])
-        g['จำนวนที่ส่ง']  = addNum(g['จำนวนที่ส่ง'],  row['จำนวนที่ส่ง'])
-        g['จำนวนค้างส่ง'] = addNum(g['จำนวนค้างส่ง'], row['จำนวนค้างส่ง'])
-        // ใช้ค่าล่าสุด
-        ;['สถานะ','ผู้รับผิดชอบ','ยอดขายรวม','วันที่ลงบันทึก'].forEach(f => {
-          if (row[f]) g[f] = row[f]
+        // อัปเดต field ระดับใบงาน ด้วยค่าล่าสุด
+        ;['สถานะ','ผู้รับผิดชอบ','วันที่ลงบันทึก','รายละเอียด','บริษัท','ประเภท','วันที่','วันที่เริ่ม','วันที่เสร็จ'].forEach(f => {
+          if (row[f] && !g[f]) g[f] = row[f]
+          else if (row[f] && f === 'สถานะ') g[f] = row[f]  // สถานะใช้ล่าสุด
         })
-        g._rows.push(row)
       }
     })
-    return order.map(k => map[k])
+    // rebuild รายการย่อย string จาก _subRows (เพื่อให้ parseSubItems ทำงานได้)
+    return order.map(k => {
+      const g = map[k]
+      if (g._subRows && g._subRows.length > 0) {
+        g['รายการย่อย'] = g._subRows.map(s =>
+          `- ${s.name} (${s.qty}/${s.qty} ${s.unit}) [${s.status}] {P:${s.price}}`
+        ).join('\n')
+      }
+      return g
+    })
   }, [jobs])
 
   const filtered = useMemo(() => {
