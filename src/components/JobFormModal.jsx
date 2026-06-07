@@ -183,7 +183,7 @@ function SubItemRow({ item, idx, onChange, onRemove }) {
 }
 
 // ------------------------------------------------------------------ main modal
-export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
+export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJob = null }) {
   const [form, setForm] = useState({})
   const [subItems, setSubItems] = useState([])
   const [files, setFiles] = useState([]) // [{file, preview}]
@@ -194,38 +194,74 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
   const fileInputRef = useRef()
   const pdfInputRef = useRef()
 
-  // Reset form when opened
+  // Reset form when opened — ถ้ามี editJob ให้ pre-fill
   useEffect(() => {
     if (!open) return
     const today = todayThai()
-    setForm({
-      date: today,
-      company: 'BFLPC',
-      type: 'สร้าง',
-      jobNo: '',
-      projectNo: '',
-      projectName: '',
-      requester: '',
-      responsible: 'ผลกิจ',
-      description: '',
-      remark: '',
-      po: '',
-      qty: '',
-      price: '',
-      sentQty: '',
-      outstandingQty: '0',
-      doRef: '',
-      status: 'งานใหม่',
-      statusDate: today,
-      otherCompany: '',
-      vatType: 'ครั้งเดียว',
-      vatPct: '7',
-    })
-    setSubItems([])
+    if (editJob) {
+      // parse sub-items จาก grouped _subRows หรือ string รายการย่อย
+      let parsedSubs = []
+      if (editJob._subRows && editJob._subRows.length > 0) {
+        parsedSubs = editJob._subRows.map(s => ({
+          name: s.name, qty: String(s.qty), unit: s.unit || 'ชิ้น',
+          price: String(s.price), status: s.status || 'รอดำเนินการ',
+          sentQty: String(s.sent || 0),
+        }))
+      }
+      setForm({
+        date:           editJob['วันที่'] || today,
+        company:        editJob['บริษัท'] || 'BFLPC',
+        type:           editJob['ประเภท'] || 'สร้าง',
+        jobNo:          editJob['เลขที่'] || '',
+        projectNo:      editJob['เลขที่โครงการ'] || '',
+        projectName:    editJob['ชื่อโครงการ'] || '',
+        requester:      editJob['ผู้แจ้ง'] || '',
+        responsible:    editJob['ผู้รับผิดชอบ'] || 'ผลกิจ',
+        description:    editJob['รายละเอียด'] || '',
+        remark:         editJob['หมายเหตุ'] || '',
+        po:             editJob['PO'] || '',
+        qty:            editJob['จำนวน'] || '',
+        price:          editJob['ขาย/หน่วย'] || '',
+        sentQty:        editJob['จำนวนที่ส่ง'] || '0',
+        outstandingQty: editJob['จำนวนค้างส่ง'] || '0',
+        doRef:          editJob['เลขที่ใบส่งของ'] || '',
+        status:         editJob['สถานะ'] || 'งานใหม่',
+        statusDate:     editJob['วันที่สถานะ'] || today,
+        otherCompany:   '',
+        vatType:        editJob['ความถี่สั่งซื้อ'] || 'ครั้งเดียว',
+        vatPct:         editJob['VAT'] || '7',
+      })
+      setSubItems(parsedSubs)
+    } else {
+      setForm({
+        date: today,
+        company: 'BFLPC',
+        type: 'สร้าง',
+        jobNo: '',
+        projectNo: '',
+        projectName: '',
+        requester: '',
+        responsible: 'ผลกิจ',
+        description: '',
+        remark: '',
+        po: '',
+        qty: '',
+        price: '',
+        sentQty: '',
+        outstandingQty: '0',
+        doRef: '',
+        status: 'งานใหม่',
+        statusDate: today,
+        otherCompany: '',
+        vatType: 'ครั้งเดียว',
+        vatPct: '7',
+      })
+      setSubItems([])
+    }
     setFiles([])
     setError('')
     setExtracted(false)
-  }, [open])
+  }, [open, editJob])
 
   // Auto-generate job number when company or date changes
   useEffect(() => {
@@ -437,21 +473,32 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
         'ขาย/หน่วย': subItems.length > 0 ? '' : (form.price || ''),
       }
 
+      const action = editJob ? 'updateJob' : 'addJob'
+
       let res
       if (subItems.length === 0) {
-        // ไม่มี sub-items → 1 row ปกติ
-        res = await postSheet({ action: 'addJob', data: baseRow })
+        // ไม่มี sub-items → 1 row
+        res = await postSheet({ action, data: baseRow })
       } else {
-        // มี sub-items → ส่ง header + แต่ละ sub-item แยก row
-        // header row (ไม่มี sub-item name)
-        res = await postSheet({ action: 'addJob', data: { ...baseRow, รายการย่อย: serializeSubItems(subItems), 'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`, 'ขาย/หน่วย': '' } })
+        // มี sub-items → ส่งแต่ละ sub-item แยก row
+        // Apps Script จะ split เป็นหลายแถวใน Sheet
+        // เก็บ serialize ไว้ด้วยเพื่อใช้แสดงผลฝั่ง app
+        res = await postSheet({
+          action,
+          data: {
+            ...baseRow,
+            รายการย่อย: serializeSubItems(subItems),
+            'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`,
+            'ขาย/หน่วย': '',
+          }
+        })
       }
 
-      if (res.status === 'success') {
+      if (res && res.status === 'success') {
         onSaved && onSaved()
         onClose()
       } else {
-        setError(`บันทึกไม่สำเร็จ: ${res.message || 'กรุณาตรวจสอบการเชื่อมต่อ Apps Script'}`)
+        setError(`บันทึกไม่สำเร็จ: ${res?.message || 'กรุณาตรวจสอบการเชื่อมต่อ Apps Script'}`)
       }
     } catch (e) {
       console.error('Save error:', e)
@@ -859,7 +906,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
             className="flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-semibold text-white transition-all"
             style={{ background: saving ? '#1e3a5f' : 'linear-gradient(135deg, #1d6fd8, #1a56b0)' }}>
             {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-            {saving ? 'กำลังบันทึก...' : '✓ บันทึกข้อมูล'}
+            {saving ? 'กำลังบันทึก...' : editJob ? '✓ ยืนยันการแก้ไข' : '✓ บันทึกข้อมูล'}
           </button>
         </div>
       </div>

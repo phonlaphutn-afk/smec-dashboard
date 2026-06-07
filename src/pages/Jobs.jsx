@@ -81,6 +81,7 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
   const [poFilter, setPoFilter] = useState('')
   const [page, setPage] = useState(1)
   const [sort, setSort] = useState({ key: 'วันที่', dir: 'desc' })
+  const [editJob, setEditJob] = useState(null)
 
   // Derive unique filter options
   const years = useMemo(() => {
@@ -281,15 +282,16 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
         </div>
       </div>
 
-      <JobFormModal open={showForm} onClose={() => setShowForm(false)} jobs={jobs}
-        onSaved={() => { onRefresh && onRefresh(); setShowForm(false) }}/>
+      <JobFormModal open={showForm} onClose={() => { setShowForm(false); setEditJob(null) }} jobs={jobs}
+        editJob={editJob}
+        onSaved={() => { onRefresh && onRefresh(); setShowForm(false); setEditJob(null) }}/>
 
       <JobDetailModal
         job={selectedJob}
         open={!!selectedJob}
         onClose={() => setSelectedJob(null)}
         doList={doList}
-        onEdit={(job) => { setSelectedJob(null); setShowForm(true) }}
+        onEdit={(job) => { setEditJob(job); setSelectedJob(null); setShowForm(true) }}
         onDelete={(job) => {
           if (window.confirm(`ลบงาน ${job['เลขที่']} ใช่ไหมครับ?`)) {
             setSelectedJob(null)
