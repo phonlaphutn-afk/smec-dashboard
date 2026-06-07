@@ -748,15 +748,49 @@ function AddPlanModal({ jobs, onClose, onAdd }) {
 const LOCAL_PLANS_KEY = 'smec_plans_v1'
 const LOCAL_HOLIDAYS_KEY = 'smec_holidays_v1'
 
+// แปลง row จาก Schedule_DB → plan object
+function sheetRowToPlan(row) {
+  return {
+    id:         row.Task_ID || row.task_id || '',
+    jobNo:      row.DocNo   || row.docno   || '',
+    taskName:   row.TaskName|| row.taskname|| '',
+    assignee:   row.Assignee|| row.assignee|| '',
+    startDate:  row.StartDate || row.startdate || '',
+    endDate:    row.EndDate   || row.enddate   || '',
+    status:     row.Status    || row.status    || 'รอดำเนินการ',
+    progress:   row.Progress  || row.progress  || '0',
+    actualStart:row.ActualStartDate || '',
+    actualEnd:  row.ActualEndDate   || '',
+    fromSheet:  true,
+  }
+}
+
 export default function Schedule({ schedule, jobs }) {
   const [activeTab, setActiveTab] = useState('dashboard')
 
-  // Plans stored in localStorage (until backend is ready)
-  const [plans, setPlansState] = useState(() => {
+  // Local plans (เพิ่มเองจาก App)
+  const [localPlans, setLocalPlansState] = useState(() => {
     try { return JSON.parse(localStorage.getItem(LOCAL_PLANS_KEY)||'[]') } catch { return [] }
   })
+  const setLocalPlans = (fn) => {
+    setLocalPlansState(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : fn
+      localStorage.setItem(LOCAL_PLANS_KEY, JSON.stringify(next))
+      return next
+    })
+  }
+
+  // Merge: Sheet data เป็น base, local plans เพิ่มเติม (ถ้า id ซ้ำกับ Sheet ให้ Sheet ชนะ)
+  const plans = useMemo(() => {
+    const sheetPlans = (schedule || []).map(sheetRowToPlan).filter(p => p.taskName)
+    const sheetIds   = new Set(sheetPlans.map(p => p.id))
+    const onlyLocal  = localPlans.filter(p => !p.id || !sheetIds.has(p.id))
+    return [...sheetPlans, ...onlyLocal]
+  }, [schedule, localPlans])
+
+  // setPlans ใช้แก้ local plans เท่านั้น (Sheet plans แก้ผ่าน Google Sheet)
   const setPlans = (fn) => {
-    setPlansState(prev => {
+    setLocalPlansState(prev => {
       const next = typeof fn === 'function' ? fn(prev) : fn
       localStorage.setItem(LOCAL_PLANS_KEY, JSON.stringify(next))
       return next
