@@ -191,6 +191,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
   const [error, setError] = useState('')
   const [extracting, setExtracting] = useState(false)
   const [extracted, setExtracted] = useState(false)
+  const [originalSubNames, setOriginalSubNames] = useState(new Set()) // ชื่อ sub-items เดิมตอน edit
   const fileInputRef = useRef()
   const pdfInputRef = useRef()
 
@@ -232,6 +233,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
         vatPct:         editJob['VAT'] || '7',
       })
       setSubItems(parsedSubs)
+      setOriginalSubNames(new Set(parsedSubs.map(s => s.name)))
     } else {
       setForm({
         date: today,
@@ -257,6 +259,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
         vatPct: '7',
       })
       setSubItems([])
+      setOriginalSubNames(new Set())
     }
     setFiles([])
     setError('')
@@ -475,20 +478,30 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
 
       const action = editJob ? 'updateJob' : 'addJob'
 
+      // ถ้าเป็น updateJob → ส่งเฉพาะ sub-items ที่เพิ่มใหม่ (ชื่อไม่ซ้ำกับเดิม)
+      const newSubItems = editJob
+        ? subItems.filter(it => !originalSubNames.has(it.name))
+        : subItems
+
       let res
-      if (subItems.length === 0) {
-        // ไม่มี sub-items → 1 row
+      if (newSubItems.length === 0 && !editJob) {
+        // addJob ไม่มี sub-items → 1 row ปกติ
         res = await postSheet({ action, data: baseRow })
+      } else if (newSubItems.length === 0 && editJob) {
+        // updateJob ไม่มีรายการใหม่ → อัปเดต field หลักอย่างเดียว (สถานะ, หมายเหตุ ฯลฯ)
+        res = await postSheet({ action, data: { ...baseRow, รายการย่อย: '', 'ยอดขายรวม': '', 'ขาย/หน่วย': '' } })
       } else {
-        // มี sub-items → ส่งแต่ละ sub-item แยก row
-        // Apps Script จะ split เป็นหลายแถวใน Sheet
-        // เก็บ serialize ไว้ด้วยเพื่อใช้แสดงผลฝั่ง app
+        // ส่ง sub-items (ใหม่เท่านั้นถ้าเป็น update)
+        const targetSubs = editJob ? newSubItems : subItems
+        // คำนวณยอดเฉพาะ sub ที่จะส่ง
+        const targetTotal = targetSubs.reduce((s, it) => s + (parseFloat(it.price||0) * parseFloat(it.qty||0)), 0)
+        const vatAmt = targetTotal * parseFloat(form.vatPct || 7) / 100
         res = await postSheet({
           action,
           data: {
             ...baseRow,
-            รายการย่อย: serializeSubItems(subItems),
-            'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`,
+            รายการย่อย: serializeSubItems(targetSubs),
+            'ยอดขายรวม': `฿${(targetTotal + vatAmt).toFixed(2)}`,
             'ขาย/หน่วย': '',
           }
         })
@@ -906,7 +919,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved, editJo
             className="flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-semibold text-white transition-all"
             style={{ background: saving ? '#1e3a5f' : 'linear-gradient(135deg, #1d6fd8, #1a56b0)' }}>
             {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-            {saving ? 'กำลังบันทึก...' : editJob ? '✓ ยืนยันการแก้ไข' : '✓ บันทึกข้อมูล'}
+            {saving ? 'กำลังบันทึก...' : editJob ? `✓ ยืนยันการแก้ไข${subItems.filter(it => !originalSubNames.has(it.name)).length > 0 ? ` (+${subItems.filter(it => !originalSubNames.has(it.name)).length} รายการใหม่)` : ''}` : '✓ บันทึกข้อมูล'}
           </button>
         </div>
       </div>

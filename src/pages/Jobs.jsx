@@ -292,8 +292,23 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
         onClose={() => setSelectedJob(null)}
         doList={doList}
         onEdit={(job) => { setEditJob(job); setSelectedJob(null); setShowForm(true) }}
-        onDelete={(job) => {
-          if (window.confirm(`ลบงาน ${job['เลขที่']} ใช่ไหมครับ?`)) {
+        onDelete={async (job) => {
+          if (!window.confirm(`ลบงาน ${job['เลขที่']} ใช่ไหมครับ?\nแถวทั้งหมดที่มีเลขที่นี้จะถูกลบออกจาก Sheet`)) return
+          try {
+            const { postSheet } = await import('../api')
+            const res = await postSheet({
+              action: 'delete',
+              id: job['id'] || '',
+              เลขที่: job['เลขที่'] || '',
+            })
+            if (res.status === 'success' || res.status === undefined) {
+              setSelectedJob(null)
+              onRefresh && onRefresh()
+            } else {
+              alert('ลบไม่สำเร็จ: ' + (res.message || 'กรุณาลองใหม่'))
+            }
+          } catch(e) {
+            // no-cors mode อาจไม่มี response — ถือว่าสำเร็จ
             setSelectedJob(null)
             onRefresh && onRefresh()
           }
