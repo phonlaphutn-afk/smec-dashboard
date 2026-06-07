@@ -1,4 +1,4 @@
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxGoP6D3EQ1V8uewMkEFF0u0yfhkXLvfWMjI_OMRsEapJCkwyCoJeDGo8Y5WHr8G5GWrw/exec'
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzuTX5dfMwkhnkVUElKYX1FD6DhymJQB4qWT3aQZkpAkn1dmYjMpezYvqg_Zw1YmMT8cg/exec'
 
 export async function fetchSheet(action) {
   try {
