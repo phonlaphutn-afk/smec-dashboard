@@ -103,8 +103,43 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
     setJobNoFilter(''); setPoFilter(''); setPage(1)
   }
 
+  // ── Group rows ที่มีเลขที่ + PO เดียวกัน → รวมเป็นใบงานเดียว ──
+  const groupedJobs = useMemo(() => {
+    const map = {}
+    const order = []
+    jobs.forEach(row => {
+      const key = (row['เลขที่'] || '') + '||' + (row['PO'] || '')
+      if (!map[key]) {
+        map[key] = { ...row, _rows: [row] }
+        order.push(key)
+      } else {
+        const g = map[key]
+        // รวม sub-items
+        const existingLines = new Set(
+          (g['รายการย่อย'] || '').split('\n').map(l => l.trim()).filter(Boolean)
+        )
+        const newLines = (row['รายการย่อย'] || '').split('\n')
+          .map(l => l.trim()).filter(l => l && !existingLines.has(l))
+        if (newLines.length > 0) {
+          g['รายการย่อย'] = [g['รายการย่อย'], ...newLines].filter(Boolean).join('\n')
+        }
+        // รวม qty
+        const addNum = (a, b) => String((parseFloat(a) || 0) + (parseFloat(b) || 0))
+        g['จำนวน']        = addNum(g['จำนวน'],        row['จำนวน'])
+        g['จำนวนที่ส่ง']  = addNum(g['จำนวนที่ส่ง'],  row['จำนวนที่ส่ง'])
+        g['จำนวนค้างส่ง'] = addNum(g['จำนวนค้างส่ง'], row['จำนวนค้างส่ง'])
+        // ใช้ค่าล่าสุด
+        ;['สถานะ','ผู้รับผิดชอบ','ยอดขายรวม','วันที่ลงบันทึก'].forEach(f => {
+          if (row[f]) g[f] = row[f]
+        })
+        g._rows.push(row)
+      }
+    })
+    return order.map(k => map[k])
+  }, [jobs])
+
   const filtered = useMemo(() => {
-    let data = jobs.filter(j => {
+    let data = groupedJobs.filter(j => {
       const q = search.toLowerCase()
       const matchSearch = !q ||
         (j['เลขที่']||'').toLowerCase().includes(q) ||
@@ -135,7 +170,7 @@ export default function Jobs({ jobs, onRefresh, doList = [] }) {
       return sort.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
     })
     return data
-  }, [jobs, search, yearFilter, monthFilter, companyFilter, typeFilter, statusFilter, jobNoFilter, poFilter, sort])
+  }, [groupedJobs, search, yearFilter, monthFilter, companyFilter, typeFilter, statusFilter, jobNoFilter, poFilter, sort])
 
   const paginated = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE)
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE)
