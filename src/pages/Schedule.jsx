@@ -185,169 +185,346 @@ function ScheduleDashboard({ jobs, plans, holidays }) {
 }
 
 // ── 2. MASTER PLAN (Gantt) ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// MASTER PLAN — Gantt สวย grouping by DocNo
+// ─────────────────────────────────────────────────────────────────
+const PROJ_COLORS = [
+  '#60a5fa','#34d399','#f59e0b','#f472b6','#a78bfa',
+  '#38bdf8','#fb923c','#4ade80','#e879f9','#facc15',
+]
+
 function MasterPlan({ jobs, plans, setPlans, holidays }) {
-  const [viewMode, setViewMode] = useState('week') // week | month
-  const [startDate, setStartDate] = useState(getMondayOf(todayISO()))
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [filterType, setFilterType] = useState('all') // all | general | project
-  const [search, setSearch] = useState('')
+  const [viewMode, setViewMode]     = useState('2w')   // 2w | 1m | 3m
+  const [anchor, setAnchor]         = useState(getMondayOf(todayISO()))
+  const [filterType, setFilterType] = useState('all')  // all | project | general
+  const [search, setSearch]         = useState('')
+  const [showAdd, setShowAdd]       = useState(false)
+  const [collapsed, setCollapsed]   = useState({})     // { docNo: true }
+  const scrollRef = useRef(null)
 
-  const displayDays = viewMode === 'week' ? 14 : 30
-  const dates = getWeekDates(startDate, displayDays)
-  const endDate = dates[dates.length-1]
+  const LABEL_W  = 280  // px ของคอลัมน์ชื่องาน
+  const COL_W    = viewMode === '3m' ? 24 : viewMode === '1m' ? 32 : 42 // px/day
 
-  const holidaySet = useMemo(() => new Set(holidays.map(h=>h.date)), [holidays])
+  const displayDays = viewMode === '2w' ? 14 : viewMode === '1m' ? 30 : 90
+  const dates       = useMemo(() => getWeekDates(anchor, displayDays), [anchor, displayDays])
+  const endAnchor   = dates[dates.length-1]
+  const holidaySet  = useMemo(() => new Set(holidays.map(h=>h.date)), [holidays])
+  const today       = todayISO()
 
-  const filteredPlans = useMemo(() => {
-    return plans.filter(p => {
-      const job = jobs.find(j => j['เลขที่'] === p.jobNo)
-      const isProject = job?.['ประเภท'] === 'โครงการ' || p.isProject
-      if (filterType === 'general' && isProject) return false
-      if (filterType === 'project' && !isProject) return false
-      if (search && !p.taskName?.toLowerCase().includes(search.toLowerCase()) &&
-          !p.jobNo?.toLowerCase().includes(search.toLowerCase())) return false
-      // show if overlaps visible range
-      return !(p.endDate < startDate || p.startDate > endDate)
+  // group month header
+  const monthGroups = useMemo(() => {
+    const groups = []
+    let cur = null
+    dates.forEach(d => {
+      const ym = d.slice(0,7)
+      if (!cur || cur.ym !== ym) { cur = { ym, label: `${MONTHS_TH[parseInt(d.slice(5,7))-1]} ${parseInt(d.slice(0,4))+543}`, count:1 }; groups.push(cur) }
+      else cur.count++
     })
-  }, [plans, filterType, search, startDate, endDate, jobs])
+    return groups
+  }, [dates])
 
-  const move = (n) => setStartDate(addDays(startDate, n * (viewMode==='week'?7:30)))
+  // filter + group by DocNo
+  const grouped = useMemo(() => {
+    const docColorMap = {}
+    let colorIdx = 0
+    const filtered = plans.filter(p => {
+      if (!p.startDate || !p.endDate) return false
+      if (p.endDate < anchor || p.startDate > endAnchor) return false
+      const isProj = !!p.isProject || jobs.find(j=>j['เลขที่']===p.jobNo)?.['ประเภท']==='โครงการ'
+      if (filterType==='project' && !isProj) return false
+      if (filterType==='general' && isProj) return false
+      if (search) {
+        const q = search.toLowerCase()
+        if (!p.taskName?.toLowerCase().includes(q) && !p.jobNo?.toLowerCase().includes(q)) return false
+      }
+      return true
+    })
 
-  const pctLeft = (d) => Math.max(0, daysBetween(startDate,d) / displayDays * 100)
-  const pctWidth = (s,e) => {
-    const clampS = s < startDate ? startDate : s
-    const clampE = e > endDate ? endDate : e
-    return Math.max(0.5, daysBetween(clampS,clampE)+1) / displayDays * 100
+    // assign color per docNo
+    const map = {}
+    filtered.forEach(p => {
+      const key = p.jobNo || p.taskName || 'unknown'
+      if (!map[key]) {
+        if (!docColorMap[key]) { docColorMap[key] = PROJ_COLORS[colorIdx % PROJ_COLORS.length]; colorIdx++ }
+        map[key] = { docNo: key, color: docColorMap[key], tasks: [] }
+      }
+      map[key].tasks.push(p)
+    })
+    return Object.values(map)
+  }, [plans, anchor, endAnchor, filterType, search, jobs])
+
+  const move = (n) => setAnchor(addDays(anchor, n * (viewMode==='2w'?7:viewMode==='1m'?14:30)))
+  const jumpToday = () => setAnchor(getMondayOf(today))
+
+  // ── helpers: position on timeline ──
+  const dayX = (iso) => {
+    const d = daysBetween(anchor, iso)
+    return Math.max(0, d) * COL_W
+  }
+  const barStyle = (s, e, color, prog) => {
+    const clampS = s < anchor ? anchor : s
+    const clampE = e > endAnchor ? endAnchor : e
+    const left  = dayX(clampS)
+    const width = Math.max(COL_W*0.5, (daysBetween(clampS,clampE)+1)*COL_W)
+    return { left, width, color, prog: Math.min(100, Math.max(0, parseFloat(prog||0))) }
   }
 
-  const deletePlan = (id) => {
-    if (window.confirm('ลบแผนงานนี้ใช่ไหมครับ?'))
-      setPlans(ps => ps.filter(p => p.id !== id))
+  const totalW = displayDays * COL_W
+
+  // scroll so today is visible on mount
+  useEffect(() => {
+    if (scrollRef.current) {
+      const todayOffset = dayX(today)
+      scrollRef.current.scrollLeft = Math.max(0, todayOffset - 200)
+    }
+  }, [anchor, COL_W])
+
+  const toggleCollapse = (key) => setCollapsed(p => ({...p,[key]:!p[key]}))
+
+  // status label + dot
+  const StatusDot = ({status}) => {
+    const c = STATUS_COLORS[status] || '#94a3b8'
+    return <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{background:c, flexShrink:0}}/>
   }
 
   return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
-          <button onClick={() => move(-1)} className="p-2 hover:bg-white/10 text-steel-400 hover:text-white transition-colors"><ChevronLeft size={14}/></button>
-          <button onClick={() => setStartDate(getMondayOf(todayISO()))} className="px-3 py-1.5 text-xs text-steel-400 hover:text-white transition-colors">วันนี้</button>
-          <button onClick={() => move(1)} className="p-2 hover:bg-white/10 text-steel-400 hover:text-white transition-colors"><ChevronRight size={14}/></button>
+    <div className="space-y-3">
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* nav */}
+        <div className="flex items-center rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
+          <button onClick={()=>move(-1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronLeft size={14}/></button>
+          <button onClick={jumpToday} className="px-3 py-1.5 text-xs text-steel-400 hover:text-white transition-colors border-x border-steel-800">วันนี้</button>
+          <button onClick={()=>move(1)} className="px-2 py-1.5 text-steel-400 hover:text-white hover:bg-white/10 transition-colors"><ChevronRight size={14}/></button>
         </div>
-        <span className="text-steel-300 text-sm font-medium">
-          {fmtDateTH(startDate)} – {fmtDateTH(endDate)}
-        </span>
-        <div className="flex items-center gap-1 rounded-lg overflow-hidden ml-auto" style={{border:'1px solid #1e3a5f'}}>
-          {['week','month'].map(m => (
-            <button key={m} onClick={() => setViewMode(m)}
-              className="px-3 py-1.5 text-xs transition-colors"
-              style={{background: viewMode===m ? 'rgba(56,139,253,0.2)' : 'transparent', color: viewMode===m ? '#60a5fa' : '#4a6584'}}>
-              {m==='week'?'2 สัปดาห์':'1 เดือน'}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1 rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
-          {[['all','ทั้งหมด'],['general','ทั่วไป'],['project','โครงการ']].map(([v,l]) => (
-            <button key={v} onClick={() => setFilterType(v)}
-              className="px-3 py-1.5 text-xs transition-colors"
-              style={{background: filterType===v ? 'rgba(56,139,253,0.2)' : 'transparent', color: filterType===v ? '#60a5fa' : '#4a6584'}}>
+        <span className="text-white text-sm font-semibold">{fmtDateTH(anchor)} – {fmtDateTH(endAnchor)}</span>
+
+        {/* view mode */}
+        <div className="flex items-center rounded-lg overflow-hidden ml-auto" style={{border:'1px solid #1e3a5f'}}>
+          {[['2w','2 สัปดาห์'],['1m','1 เดือน'],['3m','3 เดือน']].map(([v,l])=>(
+            <button key={v} onClick={()=>setViewMode(v)} className="px-3 py-1.5 text-xs transition-colors"
+              style={{background:viewMode===v?'rgba(56,139,253,0.2)':'transparent', color:viewMode===v?'#60a5fa':'#4a6584'}}>
               {l}
             </button>
           ))}
         </div>
+
+        {/* filter type */}
+        <div className="flex items-center rounded-lg overflow-hidden" style={{border:'1px solid #1e3a5f'}}>
+          {[['all','ทั้งหมด'],['project','โครงการ'],['general','ทั่วไป']].map(([v,l])=>(
+            <button key={v} onClick={()=>setFilterType(v)} className="px-3 py-1.5 text-xs transition-colors"
+              style={{background:filterType===v?'rgba(56,139,253,0.2)':'transparent', color:filterType===v?'#60a5fa':'#4a6584'}}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* search */}
         <div className="relative">
           <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-steel-500"/>
-          <input className="pl-7 pr-3 py-1.5 text-xs w-44" placeholder="ค้นหางาน..."
-            value={search} onChange={e => setSearch(e.target.value)}/>
+          <input className="pl-7 pr-3 py-1.5 text-xs w-44" placeholder="ค้นหา..." value={search} onChange={e=>setSearch(e.target.value)}/>
         </div>
-        <button onClick={() => setShowAddModal(true)}
+
+        <button onClick={()=>setShowAdd(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
           style={{background:'linear-gradient(135deg,#1d6fd8,#1a56b0)'}}>
           <Plus size={13}/> เพิ่มแผนงาน
         </button>
       </div>
 
-      {/* Gantt chart */}
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto" style={{minWidth:800}}>
-          {/* Date header */}
-          <div className="flex border-b border-steel-800" style={{background:'#071624'}}>
-            <div className="shrink-0 text-xs text-steel-500 px-3 py-2" style={{width:220}}>งาน</div>
-            <div className="flex-1 flex">
-              {dates.map(d => {
-                const isToday = d === todayISO()
-                const isHol = holidaySet.has(d)
-                const dow = new Date(d).getDay()
-                const isWeekend = dow === 0 || dow === 6
+      {/* ── Legend ── */}
+      <div className="flex items-center gap-4 text-xs text-steel-500">
+        {Object.entries(STATUS_COLORS).map(([s,c])=>(
+          <span key={s} className="flex items-center gap-1">
+            <span className="w-3 h-3 rounded-sm inline-block" style={{background:c+'40',border:`1px solid ${c}70`}}/>
+            {s}
+          </span>
+        ))}
+        <span className="flex items-center gap-1 ml-2">
+          <span className="w-px h-4 inline-block" style={{background:'rgba(56,139,253,0.7)'}}/>วันนี้
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-3 h-3 rounded-sm inline-block" style={{background:'rgba(248,113,113,0.08)'}}/>วันหยุด/เสาร์-อาทิตย์
+        </span>
+      </div>
+
+      {/* ── Gantt body ── */}
+      <div className="rounded-xl overflow-hidden" style={{border:'1px solid #1e3a5f', background:'#050e1a'}}>
+        {grouped.length === 0 ? (
+          <div className="py-20 text-center text-steel-600 text-sm">ไม่มีแผนงานในช่วงนี้</div>
+        ) : (
+          <div className="flex" style={{height:'calc(100vh - 340px)', minHeight:300}}>
+
+            {/* LEFT: label column (sticky) */}
+            <div className="shrink-0 overflow-y-auto overflow-x-hidden border-r border-steel-800" style={{width:LABEL_W}}>
+              {/* header spacer */}
+              <div style={{height:48}}/>
+              {grouped.map(({docNo, color, tasks}) => {
+                const isCol = collapsed[docNo]
+                const docStart = tasks.reduce((mn,t)=>t.startDate<mn?t.startDate:mn, tasks[0]?.startDate||'')
+                const docEnd   = tasks.reduce((mx,t)=>t.endDate>mx?t.endDate:mx, tasks[0]?.endDate||'')
+                const pct = tasks.length ? Math.round(tasks.reduce((s,t)=>s+parseFloat(t.progress||0),0)/tasks.length) : 0
                 return (
-                  <div key={d} className="flex-1 text-center py-2 border-l border-steel-800/50 text-xs"
-                    style={{
-                      background: isToday ? 'rgba(56,139,253,0.15)' : isHol||isWeekend ? 'rgba(248,113,113,0.05)' : 'transparent',
-                      color: isToday ? '#60a5fa' : isHol ? '#f87171' : isWeekend ? '#64748b' : '#64748b',
-                      minWidth: 36
-                    }}>
-                    <div className="font-medium">{new Date(d).getDate()}</div>
-                    <div style={{fontSize:9}}>{WEEKDAYS_TH[new Date(d).getDay()]}</div>
+                  <div key={docNo}>
+                    {/* Group header */}
+                    <div className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-white/5 select-none border-b border-steel-800/50"
+                      onClick={()=>toggleCollapse(docNo)}
+                      style={{background:'rgba(255,255,255,0.02)', borderLeft:`3px solid ${color}`}}>
+                      <ChevronDown size={12} className="text-steel-500 shrink-0 transition-transform" style={{transform:isCol?'rotate(-90deg)':'rotate(0deg)'}}/>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white truncate" style={{color}}>{docNo}</div>
+                        <div className="text-xs text-steel-500 flex items-center gap-1">
+                          <span>{tasks.length} งาน</span>
+                          <span>·</span>
+                          <span className="font-medium" style={{color: pct>=100?'#4ade80':pct>50?'#60a5fa':'#fbbf24'}}>{pct}%</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Sub-tasks */}
+                    {!isCol && tasks.map((t,ti)=>(
+                      <div key={t.id||ti} className="flex items-center gap-2 px-3 py-2 border-b border-steel-800/20 hover:bg-white/[0.02] group"
+                        style={{borderLeft:`3px solid ${color}30`}}>
+                        <StatusDot status={t.status}/>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs text-steel-200 truncate leading-tight">{t.taskName}</div>
+                          <div className="text-xs text-steel-600 truncate">{t.assignee||'–'}</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )
               })}
             </div>
-          </div>
 
-          {/* Rows */}
-          {filteredPlans.length === 0 ? (
-            <div className="text-center py-16 text-steel-600 text-sm">ยังไม่มีแผนงานในช่วงนี้ — กด "+ เพิ่มแผนงาน"</div>
-          ) : (
-            filteredPlans.map((plan, i) => {
-              const color = STATUS_COLORS[plan.status] || '#60a5fa'
-              const prog = parseFloat(plan.progress||0)
-              return (
-                <div key={plan.id} className="flex border-b border-steel-800/30 hover:bg-white/[0.02] group"
-                  style={{background: i%2===0 ? 'transparent' : 'rgba(255,255,255,0.01)'}}>
-                  {/* Label */}
-                  <div className="shrink-0 px-3 py-2 flex items-center gap-2" style={{width:220}}>
-                    <div className="min-w-0">
-                      <div className="text-xs text-steel-200 truncate">{plan.taskName}</div>
-                      <div className="text-xs text-steel-500">{plan.jobNo} · {plan.assignee||'–'}</div>
+            {/* RIGHT: Gantt timeline (scrollable) */}
+            <div ref={scrollRef} className="flex-1 overflow-auto">
+              <div style={{width:totalW, minWidth:'100%'}}>
+
+                {/* Month header */}
+                <div className="flex sticky top-0 z-20" style={{background:'#050e1a', borderBottom:'1px solid #1e3a5f', height:24}}>
+                  {monthGroups.map(g=>(
+                    <div key={g.ym} className="flex items-center justify-center text-xs text-steel-400 font-semibold border-r border-steel-800 shrink-0"
+                      style={{width:g.count*COL_W}}>
+                      {g.label}
                     </div>
-                    <button onClick={() => deletePlan(plan.id)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-steel-600 hover:text-red-400 transition-all shrink-0">
-                      <Trash2 size={11}/>
-                    </button>
-                  </div>
-                  {/* Bar area */}
-                  <div className="flex-1 relative py-2 px-1" style={{minHeight:36}}>
-                    {plan.startDate && plan.endDate && (
-                      <div className="absolute top-1/2 -translate-y-1/2 rounded h-6 overflow-hidden flex items-center"
-                        style={{
-                          left:`${pctLeft(plan.startDate > startDate ? plan.startDate : startDate)}%`,
-                          width:`${pctWidth(plan.startDate, plan.endDate)}%`,
-                          background:`${color}20`, border:`1px solid ${color}50`,
-                          minWidth: 4
-                        }}>
-                        <div className="h-full rounded" style={{width:`${prog}%`, background:`${color}50`}}/>
-                        <span className="absolute inset-0 flex items-center px-1.5 text-xs truncate" style={{color, fontSize:'0.65rem'}}>
-                          {prog>0?`${prog}%`:''} {plan.taskName}
-                        </span>
-                      </div>
-                    )}
-                    {/* Today line */}
-                    {todayISO() >= startDate && todayISO() <= endDate && (
-                      <div className="absolute top-0 bottom-0 w-px z-10" style={{
-                        left:`${pctLeft(todayISO())}%`, background:'rgba(56,139,253,0.6)'
-                      }}/>
-                    )}
-                  </div>
+                  ))}
                 </div>
-              )
-            })
-          )}
-        </div>
+
+                {/* Day header */}
+                <div className="flex sticky top-6 z-20" style={{background:'#050e1a', borderBottom:'1px solid #1e3a5f', height:24}}>
+                  {dates.map(d=>{
+                    const isToday = d===today
+                    const dow = new Date(d).getDay()
+                    const isWeekend = dow===0||dow===6
+                    const isHol = holidaySet.has(d)
+                    return (
+                      <div key={d} className="shrink-0 flex flex-col items-center justify-center border-r border-steel-800/40 text-xs"
+                        style={{
+                          width:COL_W,
+                          background:isToday?'rgba(56,139,253,0.15)':isHol||isWeekend?'rgba(248,113,113,0.05)':'transparent',
+                          color:isToday?'#60a5fa':isHol?'#f87171':isWeekend?'#475569':'#4a6584'
+                        }}>
+                        {COL_W >= 30 ? (
+                          <>
+                            <span style={{fontSize:10, fontWeight:isToday?700:400}}>{new Date(d).getDate()}</span>
+                            {COL_W >= 38 && <span style={{fontSize:8}}>{WEEKDAYS_TH[dow]}</span>}
+                          </>
+                        ) : (
+                          <span style={{fontSize:9}}>{new Date(d).getDate()}</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Gantt rows */}
+                <div style={{paddingTop:0}}>
+                  {grouped.map(({docNo, color, tasks})=>{
+                    const isCol = collapsed[docNo]
+                    // row height same as label column
+                    const GROUP_ROW_H = 52
+                    const TASK_ROW_H  = 44
+                    return (
+                      <div key={docNo}>
+                        {/* Group header row */}
+                        <div className="relative border-b border-steel-800/50"
+                          style={{height:GROUP_ROW_H, background:'rgba(255,255,255,0.015)'}}>
+                          {/* Weekend/holiday shading */}
+                          {dates.map(d=>{
+                            const dow=new Date(d).getDay()
+                            const isW=dow===0||dow===6
+                            const isH=holidaySet.has(d)
+                            if(!isW&&!isH) return null
+                            return <div key={d} className="absolute top-0 bottom-0" style={{left:dayX(d),width:COL_W,background:'rgba(248,113,113,0.04)'}}/>
+                          })}
+                          {/* Today line */}
+                          {today>=anchor&&today<=endAnchor&&(
+                            <div className="absolute top-0 bottom-0 z-10" style={{left:dayX(today)+COL_W/2,width:1.5,background:'rgba(56,139,253,0.7)'}}/>
+                          )}
+                          {/* Group summary bar (min–max span) */}
+                          {tasks.length > 0 && (()=>{
+                            const gs = tasks.reduce((mn,t)=>t.startDate&&t.startDate<mn?t.startDate:mn,'9999')
+                            const ge = tasks.reduce((mx,t)=>t.endDate&&t.endDate>mx?t.endDate:mx,'0000')
+                            if(!gs||!ge||gs==='9999') return null
+                            const bs = barStyle(gs,ge,color,tasks.reduce((s,t)=>s+parseFloat(t.progress||0),0)/tasks.length)
+                            return (
+                              <div className="absolute rounded flex items-center overflow-hidden"
+                                style={{left:bs.left, width:bs.width, top:'50%', transform:'translateY(-50%)', height:20,
+                                  background:`${color}15`, border:`1.5px solid ${color}60`}}>
+                                <div className="h-full rounded" style={{width:`${bs.prog}%`,background:`${color}40`}}/>
+                                <span className="absolute inset-0 flex items-center px-2 text-xs font-semibold truncate" style={{color, fontSize:'0.65rem'}}>
+                                  {tasks.length} งาน · {Math.round(bs.prog)}%
+                                </span>
+                              </div>
+                            )
+                          })()}
+                        </div>
+
+                        {/* Sub-task rows */}
+                        {!isCol && tasks.map((t,ti)=>{
+                          const sc = STATUS_COLORS[t.status]||'#60a5fa'
+                          const bs = t.startDate&&t.endDate ? barStyle(t.startDate,t.endDate,sc,t.progress) : null
+                          return (
+                            <div key={t.id||ti} className="relative border-b border-steel-800/20"
+                              style={{height:TASK_ROW_H, background:ti%2===0?'transparent':'rgba(255,255,255,0.008)'}}>
+                              {dates.map(d=>{
+                                const dow=new Date(d).getDay()
+                                if(dow!==0&&dow!==6&&!holidaySet.has(d)) return null
+                                return <div key={d} className="absolute top-0 bottom-0" style={{left:dayX(d),width:COL_W,background:'rgba(248,113,113,0.03)'}}/>
+                              })}
+                              {today>=anchor&&today<=endAnchor&&(
+                                <div className="absolute top-0 bottom-0 z-10" style={{left:dayX(today)+COL_W/2,width:1,background:'rgba(56,139,253,0.4)'}}/>
+                              )}
+                              {bs && (
+                                <div className="absolute rounded flex items-center overflow-hidden group/bar cursor-pointer"
+                                  title={`${t.taskName}\n${t.assignee} · ${t.status} · ${bs.prog}%\n${t.startDate} → ${t.endDate}`}
+                                  style={{left:bs.left, width:bs.width, top:'50%', transform:'translateY(-50%)', height:22,
+                                    background:`${sc}18`, border:`1px solid ${sc}50`, minWidth:4}}>
+                                  <div className="h-full rounded" style={{width:`${bs.prog}%`, background:`${sc}45`}}/>
+                                  {bs.width > 50 && (
+                                    <span className="absolute inset-0 flex items-center px-1.5 truncate" style={{color:sc, fontSize:'0.62rem', fontWeight:500}}>
+                                      {bs.prog>0?`${Math.round(bs.prog)}% `:''}
+                                      {COL_W>=38?t.taskName:''}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {showAddModal && (
-        <AddPlanModal jobs={jobs} onClose={() => setShowAddModal(false)}
-          onAdd={(plan) => { setPlans(ps => [...ps, {...plan, id: Date.now().toString()}]); setShowAddModal(false) }}/>
+      {showAdd && (
+        <AddPlanModal jobs={jobs} onClose={()=>setShowAdd(false)}
+          onAdd={(p)=>{ setPlans(ps=>[...ps,{...p,id:Date.now().toString()}]); setShowAdd(false) }}/>
       )}
     </div>
   )

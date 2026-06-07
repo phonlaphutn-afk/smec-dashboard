@@ -227,8 +227,15 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  // Calculations
-  const subTotal = parseFloat(form.price || 0) * parseFloat(form.qty || 1) || 0
+  // Calculations — ถ้ามี subItems ให้ sum จากแต่ละรายการ
+  const subTotal = subItems.length > 0
+    ? subItems.reduce((sum, it) => sum + (parseFloat(it.price || 0) * parseFloat(it.qty || 1)), 0)
+    : parseFloat(form.price || 0) * parseFloat(form.qty || 1) || 0
+
+  const totalQty = subItems.length > 0
+    ? subItems.reduce((sum, it) => sum + parseFloat(it.qty || 0), 0)
+    : parseFloat(form.qty || 0)
+
   const vatAmount = (subTotal * parseFloat(form.vatPct || 7)) / 100
   const grandTotal = subTotal + vatAmount
 
@@ -251,7 +258,7 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
         r.onerror = rej
         r.readAsDataURL(file)
       })
-      const mimeType = file.type || 'application/pdf'
+      const mimeType = 'application/pdf'  // always pdf
       const result = await extractFromPDF(base64, mimeType)
 
       // Map company string → dropdown value
@@ -371,49 +378,53 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
       // ── โครงสร้างใหม่: 1 row ต่อ sub-item ──
       // ถ้าไม่มี sub-items → บันทึก 1 row (เหมือนเดิม)
       // ถ้ามี sub-items → บันทึก header row 1 แถว + sub-item แต่ละตัว 1 แถว
+      // baseRow — key ต้องตรงกับ header ของ Sheet "ใบงาน" ทุกตัว
       const baseRow = {
         วันที่: displayDate(form.date),
         เลขที่: form.jobNo,
-        บริษัท: companyName,
-        ประเภท: form.type,
-        ผู้แจ้ง: form.requester,
-        ผู้รับผิดชอบ: form.responsible,
-        รายละเอียด: form.description,
-        หมายเหตุ: form.remark,
+        'เลขที่โครงการ': form.type === 'โครงการ' ? form.projectNo : '',
+        'ชื่อโครงการ': form.type === 'โครงการ' ? form.projectName : '',
         PO: form.po,
-        จำนวน: form.qty,
-        'ราคา/หน่วย': form.price,
-        'ยอดขายรวม': grandTotal.toFixed(2),
-        จำนวนส่งแล้ว: form.sentQty || '0',
-        จำนวนค้างส่ง: form.outstandingQty || '0',
-        'อ้างใบส่งของ DO': form.doRef,
+        บริษัท: companyName,
+        'ผู้แจ้ง': form.requester,
+        ประเภท: form.type,
+        รายละเอียด: form.description,
+        รายการย่อย: '',
         สถานะ: form.status,
-        วันที่สถานะ: displayDate(form.statusDate),
+        'วันที่สถานะ': displayDate(form.statusDate),
+        'ผู้รับผิดชอบ': form.responsible,
+        จำนวน: subItems.length > 0 ? String(Math.round(totalQty)) : (form.qty || ''),
+        'จำนวนที่ส่ง': form.sentQty || '0',
+        'จำนวนค้างส่ง': form.outstandingQty || '0',
+        'เลขที่ใบส่งของ': form.doRef || '',
         เอกสาร: fileUrls.join(','),
-        ...(form.type === 'โครงการ' ? {
-          'เลขที่โครงการ': form.projectNo,
-          'ชื่อโครงการ': form.projectName,
-        } : {}),
+        หมายเหตุ: form.remark,
+        docNo: form.jobNo,
+        'ความถี่สั่งซื้อ': form.vatType || 'ครั้งเดียว',
+        VAT: form.vatPct || '7',
+        'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`,
+        'ขาย/หน่วย': subItems.length > 0 ? '' : (form.price || ''),
       }
 
       let res
       if (subItems.length === 0) {
         // ไม่มี sub-items → 1 row ปกติ
-        res = await postSheet({ action: 'addJob', data: { ...baseRow, รายการย่อย: '' } })
+        res = await postSheet({ action: 'addJob', data: baseRow })
       } else {
         // มี sub-items → ส่ง header + แต่ละ sub-item แยก row
         // header row (ไม่มี sub-item name)
-        res = await postSheet({ action: 'addJob', data: { ...baseRow, รายการย่อย: serializeSubItems(subItems) } })
+        res = await postSheet({ action: 'addJob', data: { ...baseRow, รายการย่อย: serializeSubItems(subItems), 'ยอดขายรวม': `฿${grandTotal.toFixed(2)}`, 'ขาย/หน่วย': '' } })
       }
 
       if (res.status === 'success') {
         onSaved && onSaved()
         onClose()
       } else {
-        setError(res.message || 'บันทึกไม่สำเร็จ กรุณาลองใหม่')
+        setError(`บันทึกไม่สำเร็จ: ${res.message || 'กรุณาตรวจสอบการเชื่อมต่อ Apps Script'}`)
       }
     } catch (e) {
-      setError('เกิดข้อผิดพลาด: ' + e.message)
+      console.error('Save error:', e)
+      setError('เกิดข้อผิดพลาด: ' + (e.message || 'Network error'))
     } finally {
       setSaving(false)
     }
@@ -637,13 +648,25 @@ export default function JobFormModal({ open, onClose, jobs = [], onSaved }) {
                   value={form.vatPct} onChange={e => set('vatPct', e.target.value)} />
               </div>
             </div>
+            {/* จำนวนรวม banner เมื่อมี subItems */}
+            {subItems.length > 0 && (
+              <div className="rounded-lg px-3 py-2 flex items-center gap-3 text-xs" style={{background:'rgba(56,139,253,0.08)',border:'1px solid rgba(56,139,253,0.2)'}}>
+                <span className="text-steel-400">รายการย่อย</span>
+                <span className="font-bold text-blue-300">{subItems.length} รายการ</span>
+                <span className="text-steel-400 ml-2">จำนวนรวม</span>
+                <span className="font-bold text-blue-300">{totalQty.toLocaleString('th-TH')} ชิ้น</span>
+                <span className="text-steel-400 ml-2">ยอดรวมก่อน VAT</span>
+                <span className="font-bold text-green-300">฿{subTotal.toLocaleString('th-TH',{minimumFractionDigits:2})}</span>
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-3">
               <div className="rounded-lg p-3 text-center" style={{ background: '#0a1929' }}>
                 <div className="text-xs text-steel-500 mb-1">รวมเงิน (SUB TOTAL)</div>
                 <div className="text-sm font-bold text-steel-200">฿{subTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</div>
+                {subItems.length > 0 && <div className="text-xs text-blue-400 mt-0.5">คำนวณจาก {subItems.length} รายการ</div>}
               </div>
               <div className="rounded-lg p-3 text-center" style={{ background: '#0a1929' }}>
-                <div className="text-xs text-steel-500 mb-1">ภาษีมูลค่าเพิ่ม (VAT)</div>
+                <div className="text-xs text-steel-500 mb-1">ภาษีมูลค่าเพิ่ม (VAT {form.vatPct}%)</div>
                 <div className="text-sm font-bold text-steel-200">฿{vatAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</div>
               </div>
               <div className="rounded-lg p-3 text-center" style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)' }}>
