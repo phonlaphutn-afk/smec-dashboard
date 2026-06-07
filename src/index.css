@@ -159,3 +159,51 @@ input::placeholder { color: #4a6584; }
   top: 0; left: 0; right: 0; bottom: 0;
   background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.1) 50%, transparent 100%);
 }
+
+/* Form labels */
+.form-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #7fa7c9;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Responsive ──────────────────────────────────── */
+/* Table scroll on mobile */
+.data-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+.data-table th { background:#071624; color:#7fa7c9; font-weight:600; font-size:0.7rem;
+  text-transform:uppercase; letter-spacing:.04em; padding:10px 12px; text-align:left;
+  border-bottom:1px solid #1e3a5f; white-space:nowrap; }
+.data-table td { padding:9px 12px; border-bottom:1px solid rgba(30,58,95,0.4);
+  color:#c8d8e8; vertical-align:middle; }
+.data-table tbody tr:hover { background:rgba(255,255,255,0.025); }
+
+/* Mobile: compact table cells */
+@media (max-width:640px) {
+  .data-table th, .data-table td { padding:7px 8px; font-size:0.72rem; }
+  .metric-card { padding:12px; }
+  .metric-card .text-3xl { font-size:1.6rem; }
+  .card { border-radius:10px; }
+  input, select, textarea { padding:10px 12px; font-size:1rem; } /* prevent zoom on iOS */
+  /* Modals full-width on mobile */
+  .modal-mobile { border-radius:16px 16px 0 0 !important; }
+}
+
+/* Touch targets */
+@media (max-width:1024px) {
+  button { min-height:36px; }
+  .nav-item { min-height:44px; }
+}
+
+/* Metric card mobile */
+.metric-card {
+  background:#102a43; border:1px solid #1e3a5f; border-radius:12px;
+  padding:16px; position:relative; overflow:hidden;
+}
+
+/* Scrollable tables */
+.table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.table-scroll table { min-width:600px; }
